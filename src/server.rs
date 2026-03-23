@@ -17,13 +17,103 @@ use crate::{
     proxy::client::ProxyClient,
 };
 
-pub type AppState = (
-    Arc<Config>,
-    AuthState,
-    ProxyClient,
-    Arc<ModelDiscovery>,
-    Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
-);
+/// Application state shared across all routes
+///
+/// Provides typed access to shared resources instead of fragile tuple indexing.
+#[derive(Clone)]
+pub struct AppState {
+    pub config: Arc<Config>,
+    pub auth_state: AuthState,
+    pub proxy_client: ProxyClient,
+    pub discovery: Arc<ModelDiscovery>,
+    pub cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+impl AppState {
+    /// Create a new AppState instance
+    pub fn new(
+        config: Arc<Config>,
+        auth_state: AuthState,
+        proxy_client: ProxyClient,
+        discovery: Arc<ModelDiscovery>,
+        cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    ) -> Self {
+        Self {
+            config,
+            auth_state,
+            proxy_client,
+            discovery,
+            cleanup_handle,
+        }
+    }
+}
+
+/// Helper function to create CORS layer with consistent configuration
+fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
+    let headers = [
+        axum::http::header::CONTENT_TYPE,
+        axum::http::header::AUTHORIZATION,
+        axum::http::header::ACCEPT,
+        axum::http::HeaderName::from_static("x-api-key"),
+    ];
+
+    let methods = [
+        axum::http::Method::GET,
+        axum::http::Method::POST,
+        axum::http::Method::OPTIONS,
+    ];
+
+    if config.allowed_origins.is_empty() {
+        // Fallback to localhost defaults if no origins configured
+        let origins = [
+            "http://localhost:3000"
+                .parse()
+                .expect("Invalid localhost CORS origin"),
+            "http://127.0.0.1:3000"
+                .parse()
+                .expect("Invalid 127.0.0.1 CORS origin"),
+        ];
+
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods(methods)
+            .allow_headers(headers)
+            .allow_credentials(true)
+    } else {
+        // Use configured origins - convert Strings to HeaderValues
+        let origins: Result<Vec<axum::http::HeaderValue>, _> = config
+            .allowed_origins
+            .iter()
+            .map(|origin| origin.parse())
+            .collect();
+
+        match origins {
+            Ok(origin_headers) => CorsLayer::new()
+                .allow_origin(origin_headers)
+                .allow_methods(methods)
+                .allow_headers(headers)
+                .allow_credentials(true),
+            Err(e) => {
+                tracing::warn!("Invalid CORS origin configuration: {}, using defaults", e);
+                // Fallback to defaults on parse error
+                let fallback_origins = [
+                    "http://localhost:3000"
+                        .parse()
+                        .expect("Invalid localhost CORS origin"),
+                    "http://127.0.0.1:3000"
+                        .parse()
+                        .expect("Invalid 127.0.0.1 CORS origin"),
+                ];
+
+                CorsLayer::new()
+                    .allow_origin(fallback_origins)
+                    .allow_methods(methods)
+                    .allow_headers(headers)
+                    .allow_credentials(true)
+            }
+        }
+    }
+}
 
 pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
     info!("Creating router with authentication and CORS layers");
@@ -43,88 +133,29 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
     let cleanup_handle = Arc::new(Mutex::new(Some(auth_state.start_cleanup_task())));
 
     // Setup CORS with configurable origins
-    let cors = if config.cors.allowed_origins.is_empty() {
-        // Fallback to localhost defaults if no origins configured
-        const LOCALHOST_3000: &str = "http://localhost:3000";
-        const LOCALHOST_127_3000: &str = "http://127.0.0.1:3000";
-
-        CorsLayer::new()
-            .allow_origin([
-                LOCALHOST_3000
-                    .parse()
-                    .expect("Invalid localhost CORS origin"),
-                LOCALHOST_127_3000
-                    .parse()
-                    .expect("Invalid 127.0.0.1 CORS origin"),
-            ])
-            .allow_methods([
-                axum::http::Method::GET,
-                axum::http::Method::POST,
-                axum::http::Method::OPTIONS,
-            ])
-            .allow_headers([
-                axum::http::header::CONTENT_TYPE,
-                axum::http::header::AUTHORIZATION,
-                axum::http::header::ACCEPT,
-            ])
-            .allow_credentials(true)
-    } else {
-        // Use configured origins - convert Strings to HeaderValues
-        let origins: Result<Vec<axum::http::HeaderValue>, _> = config
-            .cors
-            .allowed_origins
-            .iter()
-            .map(|origin| origin.parse())
-            .collect();
-
-        match origins {
-            Ok(origin_headers) => CorsLayer::new()
-                .allow_origin(origin_headers)
-                .allow_methods([
-                    axum::http::Method::GET,
-                    axum::http::Method::POST,
-                    axum::http::Method::OPTIONS,
-                ])
-                .allow_headers([
-                    axum::http::header::CONTENT_TYPE,
-                    axum::http::header::AUTHORIZATION,
-                    axum::http::header::ACCEPT,
-                ])
-                .allow_credentials(true),
-            Err(e) => {
-                tracing::warn!("Invalid CORS origin configuration: {}, using defaults", e);
-                // Fallback to defaults on parse error
-                const LOCALHOST_3000: &str = "http://localhost:3000";
-                const LOCALHOST_127_3000: &str = "http://127.0.0.1:3000";
-
-                CorsLayer::new()
-                    .allow_origin([
-                        LOCALHOST_3000
-                            .parse()
-                            .expect("Invalid localhost CORS origin"),
-                        LOCALHOST_127_3000
-                            .parse()
-                            .expect("Invalid 127.0.0.1 CORS origin"),
-                    ])
-                    .allow_methods([
-                        axum::http::Method::GET,
-                        axum::http::Method::POST,
-                        axum::http::Method::OPTIONS,
-                    ])
-                    .allow_headers([
-                        axum::http::header::CONTENT_TYPE,
-                        axum::http::header::AUTHORIZATION,
-                        axum::http::header::ACCEPT,
-                    ])
-                    .allow_credentials(true)
-            }
-        }
-    };
+    let cors = create_cors_layer(&config.cors);
 
     // Create shared config and auth state for middleware
     let shared_config = Arc::new(config.clone());
     let shared_auth_state = Arc::new(auth_state.clone());
     let shared_auth_state_for_admin = Arc::new(auth_state.clone());
+
+    // Create AppState instances
+    let app_state = AppState::new(
+        shared_config.clone(),
+        auth_state.clone(),
+        proxy_client.clone(),
+        discovery.clone(),
+        cleanup_handle.clone(),
+    );
+
+    let admin_state = AppState::new(
+        shared_config.clone(),
+        auth_state.clone(),
+        proxy_client.clone(),
+        discovery.clone(),
+        cleanup_handle.clone(),
+    );
 
     // Build router with middleware
     // NOTE: Auth middleware is applied via route_layer to protect all routes below it
@@ -141,13 +172,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
             (Arc::clone(&shared_config), shared_auth_state_for_admin),
             crate::middleware::admin_auth_middleware,
         ))
-        .with_state((
-            shared_config.clone(),
-            auth_state.clone(),
-            proxy_client.clone(),
-            discovery.clone(),
-            Arc::clone(&cleanup_handle),
-        ));
+        .with_state(admin_state);
 
     // Regular API routes - protected by regular auth
     let protected_routes = Router::new()
@@ -168,13 +193,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
             (Arc::clone(&shared_config), shared_auth_state),
             crate::middleware::auth_middleware,
         ))
-        .with_state((
-            shared_config,
-            auth_state,
-            proxy_client,
-            discovery,
-            Arc::clone(&cleanup_handle),
-        ));
+        .with_state(app_state);
 
     Router::new()
         .route("/health", get(crate::routes::health::health))

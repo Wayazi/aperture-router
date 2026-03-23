@@ -17,7 +17,7 @@ use crate::server::AppState;
 /// Handle streaming proxy requests with true SSE streaming
 /// Supports both OpenAI and Anthropic formats, including tool/function calling and extended thinking
 pub async fn handle_proxy_stream(
-    State((config, _, proxy_client, _, _)): State<AppState>,
+    State(state): State<AppState>,
     Json(request): Json<Value>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     info!("Handling streaming proxy request");
@@ -71,7 +71,7 @@ pub async fn handle_proxy_stream(
     };
 
     // Forward request to Aperture
-    let response = match proxy_client.forward_request_stream(endpoint, body).await {
+    let response = match state.proxy_client.forward_request_stream(endpoint, body).await {
         Ok(response) => response,
         Err(e) => {
             error!("Failed to forward streaming request: {}", e);
@@ -81,8 +81,8 @@ pub async fn handle_proxy_stream(
 
     // Convert response chunks to SSE events, preserving tool_calls
     let include_thinking_stream = include_thinking;
-    let max_json_depth = config.security.max_json_depth;
-    let keep_alive_interval = config.http.sse_keep_alive_secs;
+    let max_json_depth = state.config.security.max_json_depth;
+    let keep_alive_interval = state.config.http.sse_keep_alive_secs;
     let sse_stream = response.flat_map(move |chunk| {
         match chunk {
             Ok(data) => {

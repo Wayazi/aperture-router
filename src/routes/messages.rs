@@ -19,11 +19,11 @@ impl HasModel for MessageRequest {
 
 /// Anthropic messages endpoint
 pub async fn anthropic_messages(
-    State((_, _, proxy_client, discovery, _)): State<AppState>,
+    State(state): State<AppState>,
     Json(request): Json<MessageRequest>,
 ) -> impl axum::response::IntoResponse {
     // Validate model exists
-    if !discovery.is_valid_model(&request.model).await {
+    if !state.discovery.is_valid_model(&request.model).await {
         warn!("Invalid model requested: {}", request.model);
         return (
             StatusCode::BAD_REQUEST,
@@ -39,7 +39,7 @@ pub async fn anthropic_messages(
     }
 
     debug!("Valid model: {}", request.model);
-    proxy_handler::<MessageRequest>(State(proxy_client), Json(request), "v1/messages")
+    proxy_handler::<MessageRequest>(State(state.proxy_client), Json(request), "v1/messages")
         .await
         .into_response()
 }
