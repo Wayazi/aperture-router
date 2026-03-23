@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2025 aperture-router contributors
+// Copyright (c) 2026 aperture-router contributors
 
 use aperture_router::config::{CorsConfig, SecurityConfig};
 use aperture_router::middleware::AuthState;
