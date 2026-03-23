@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 aperture-router contributors
 
+pub mod admin;
 pub mod chat;
 pub mod error;
 pub mod health;

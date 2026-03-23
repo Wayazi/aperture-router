@@ -126,6 +126,11 @@ pub struct SecurityConfig {
     #[serde(default)]
     pub api_keys: Vec<String>,
 
+    /// Admin API keys for administrative operations (empty means no separate admin keys)
+    /// If empty, regular api_keys are used for admin operations
+    #[serde(default)]
+    pub admin_api_keys: Vec<String>,
+
     /// Maximum request body size in bytes
     #[serde(default = "default_max_body_size")]
     pub max_body_size_bytes: usize,
@@ -269,6 +274,7 @@ impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             api_keys: Vec::new(),
+            admin_api_keys: Vec::new(),
             max_body_size_bytes: default_max_body_size(),
             max_auth_attempts: default_max_auth_attempts(),
             auth_window_secs: default_auth_window(),
@@ -383,6 +389,37 @@ impl Config {
             return Err("Security API keys contain placeholder value".to_string());
         }
 
+        // Validate admin API keys strength (CRITICAL: same requirements as regular keys)
+        for key in &self.security.admin_api_keys {
+            if key.len() < 32 {
+                return Err(format!(
+                    "Admin API key too short: {} characters (minimum 32)",
+                    key.len()
+                ));
+            }
+
+            let unique_chars = key.chars().collect::<std::collections::HashSet<_>>();
+            if unique_chars.len() < 20 {
+                return Err(
+                    "Admin API key has insufficient entropy (minimum 20 unique characters)"
+                        .to_string(),
+                );
+            }
+        }
+
+        // Check for placeholder values in admin API keys
+        if self
+            .security
+            .admin_api_keys
+            .contains(&"your-admin-api-key-here".to_string())
+            || self
+                .security
+                .admin_api_keys
+                .contains(&"your-api-key-here".to_string())
+        {
+            return Err("Admin API keys contain placeholder value".to_string());
+        }
+
         // Validate rate limits
         if self.rate_limit.requests_per_second == 0 {
             return Err("Rate limit requests per second cannot be 0".to_string());
@@ -488,10 +525,15 @@ mod tests {
 
     #[test]
     fn test_config_with_custom_values() {
-        let mut config = Config::default();
-        config.host = "192.168.1.100".to_string();
-        config.port = 9000;
-        config.aperture.base_url = "https://custom.example.com".to_string();
+        let config = Config {
+            host: "192.168.1.100".to_string(),
+            port: 9000,
+            aperture: ApertureConfig {
+                base_url: "https://custom.example.com".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         assert_eq!(config.host, "192.168.1.100");
         assert_eq!(config.port, 9000);

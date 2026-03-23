@@ -7,11 +7,8 @@ use axum::{
 };
 use std::sync::{Arc, Mutex};
 use tower_http::{
-    compression::CompressionLayer,
-    cors::CorsLayer,
-    limit::RequestBodyLimitLayer,
-    set_header::SetResponseHeaderLayer,
-    trace::TraceLayer,
+    compression::CompressionLayer, cors::CorsLayer, limit::RequestBodyLimitLayer,
+    set_header::SetResponseHeaderLayer, trace::TraceLayer,
 };
 use tracing::info;
 
@@ -24,14 +21,11 @@ pub type AppState = (
     Arc<Config>,
     AuthState,
     ProxyClient,
-    Arc<tokio::sync::RwLock<ModelDiscovery>>,
+    Arc<ModelDiscovery>,
     Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 );
 
-pub fn create_router(
-    config: Config,
-    discovery: Arc<tokio::sync::RwLock<ModelDiscovery>>,
-) -> Router {
+pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
     info!("Creating router with authentication and CORS layers");
 
     // Create proxy client
@@ -56,8 +50,12 @@ pub fn create_router(
 
         CorsLayer::new()
             .allow_origin([
-                LOCALHOST_3000.parse().expect("Invalid localhost CORS origin"),
-                LOCALHOST_127_3000.parse().expect("Invalid 127.0.0.1 CORS origin"),
+                LOCALHOST_3000
+                    .parse()
+                    .expect("Invalid localhost CORS origin"),
+                LOCALHOST_127_3000
+                    .parse()
+                    .expect("Invalid 127.0.0.1 CORS origin"),
             ])
             .allow_methods([
                 axum::http::Method::GET,
@@ -101,8 +99,12 @@ pub fn create_router(
 
                 CorsLayer::new()
                     .allow_origin([
-                        LOCALHOST_3000.parse().expect("Invalid localhost CORS origin"),
-                        LOCALHOST_127_3000.parse().expect("Invalid 127.0.0.1 CORS origin"),
+                        LOCALHOST_3000
+                            .parse()
+                            .expect("Invalid localhost CORS origin"),
+                        LOCALHOST_127_3000
+                            .parse()
+                            .expect("Invalid 127.0.0.1 CORS origin"),
                     ])
                     .allow_methods([
                         axum::http::Method::GET,
@@ -122,10 +124,32 @@ pub fn create_router(
     // Create shared config and auth state for middleware
     let shared_config = Arc::new(config.clone());
     let shared_auth_state = Arc::new(auth_state.clone());
+    let shared_auth_state_for_admin = Arc::new(auth_state.clone());
 
     // Build router with middleware
     // NOTE: Auth middleware is applied via route_layer to protect all routes below it
     // All routes except /health require authentication
+
+    // Admin routes - protected by admin-specific auth (requires admin API key)
+    let admin_routes = Router::new()
+        .route(
+            "/admin/refresh-models",
+            post(crate::routes::admin::refresh_models),
+        )
+        .route("/admin/stats", get(crate::routes::admin::get_stats))
+        .route_layer(axum::middleware::from_fn_with_state(
+            (Arc::clone(&shared_config), shared_auth_state_for_admin),
+            crate::middleware::admin_auth_middleware,
+        ))
+        .with_state((
+            shared_config.clone(),
+            auth_state.clone(),
+            proxy_client.clone(),
+            discovery.clone(),
+            Arc::clone(&cleanup_handle),
+        ));
+
+    // Regular API routes - protected by regular auth
     let protected_routes = Router::new()
         .route("/v1/models", get(crate::routes::models::models))
         .route(
@@ -144,10 +168,17 @@ pub fn create_router(
             (Arc::clone(&shared_config), shared_auth_state),
             crate::middleware::auth_middleware,
         ))
-        .with_state((shared_config, auth_state, proxy_client, discovery, Arc::clone(&cleanup_handle)));
+        .with_state((
+            shared_config,
+            auth_state,
+            proxy_client,
+            discovery,
+            Arc::clone(&cleanup_handle),
+        ));
 
     Router::new()
         .route("/health", get(crate::routes::health::health))
+        .merge(admin_routes)
         .merge(protected_routes)
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())

@@ -22,10 +22,7 @@ mod route_tests {
     async fn test_health_endpoint() {
         let config = create_test_config();
         let discovery = ModelDiscovery::new(config.aperture.clone());
-        let app = create_router(
-            config,
-            std::sync::Arc::new(tokio::sync::RwLock::new(discovery)),
-        );
+        let app = create_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
             .uri("/health")
@@ -49,10 +46,7 @@ mod route_tests {
     async fn test_health_endpoint_options() {
         let config = create_test_config();
         let discovery = ModelDiscovery::new(config.aperture.clone());
-        let app = create_router(
-            config,
-            std::sync::Arc::new(tokio::sync::RwLock::new(discovery)),
-        );
+        let app = create_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
             .uri("/health")
@@ -73,13 +67,9 @@ mod route_tests {
         let discovery = ModelDiscovery::new(config.aperture.clone());
 
         // This should not panic
-        let _app = create_router(
-            config,
-            std::sync::Arc::new(tokio::sync::RwLock::new(discovery)),
-        );
+        let _app = create_router(config, std::sync::Arc::new(discovery));
 
-        // Verify the router was created successfully
-        assert!(true);
+        // Router created successfully if we reach here
     }
 
     #[tokio::test]
@@ -88,10 +78,7 @@ mod route_tests {
         config.security.api_keys = vec!["test-api-key-with-sufficient-entropy-32".to_string()];
 
         let discovery = ModelDiscovery::new(config.aperture.clone());
-        let app = create_router(
-            config,
-            std::sync::Arc::new(tokio::sync::RwLock::new(discovery)),
-        );
+        let app = create_router(config, std::sync::Arc::new(discovery));
 
         // Health endpoint should still work without auth
         let request = Request::builder()
@@ -108,10 +95,7 @@ mod route_tests {
     async fn test_not_found_endpoint() {
         let config = create_test_config();
         let discovery = ModelDiscovery::new(config.aperture.clone());
-        let app = create_router(
-            config,
-            std::sync::Arc::new(tokio::sync::RwLock::new(discovery)),
-        );
+        let app = create_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
             .uri("/nonexistent")
@@ -131,23 +115,16 @@ mod route_tests {
         config.security.max_body_size_bytes = 5 * 1024 * 1024;
 
         let discovery = ModelDiscovery::new(config.aperture.clone());
-        let _app = create_router(
-            config,
-            std::sync::Arc::new(tokio::sync::RwLock::new(discovery)),
-        );
+        let _app = create_router(config, std::sync::Arc::new(discovery));
 
-        // Router created successfully
-        assert!(true);
+        // Router created successfully if we reach here
     }
 
     #[tokio::test]
     async fn test_cors_headers() {
         let config = create_test_config();
         let discovery = ModelDiscovery::new(config.aperture.clone());
-        let app = create_router(
-            config,
-            std::sync::Arc::new(tokio::sync::RwLock::new(discovery)),
-        );
+        let app = create_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
             .uri("/health")
@@ -168,10 +145,7 @@ mod route_tests {
     async fn test_compression_layer() {
         let config = create_test_config();
         let discovery = ModelDiscovery::new(config.aperture.clone());
-        let app = create_router(
-            config,
-            std::sync::Arc::new(tokio::sync::RwLock::new(discovery)),
-        );
+        let app = create_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
             .uri("/health")
@@ -186,7 +160,7 @@ mod route_tests {
         // Check if compression headers are present
         let _encoding = response.headers().get("content-encoding");
         // Compression may or may not be applied depending on body size
-        assert!(true, "Response successful with or without compression");
+        // Response successful if we reach here
     }
 
     #[tokio::test]
@@ -195,10 +169,7 @@ mod route_tests {
         let discovery = ModelDiscovery::new(config.aperture.clone());
 
         // Router should include trace layer
-        let app = create_router(
-            config,
-            std::sync::Arc::new(tokio::sync::RwLock::new(discovery)),
-        );
+        let app = create_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
             .uri("/health")
@@ -214,10 +185,7 @@ mod route_tests {
     async fn test_multiple_health_requests() {
         let config = create_test_config();
         let discovery = ModelDiscovery::new(config.aperture.clone());
-        let app = create_router(
-            config,
-            std::sync::Arc::new(tokio::sync::RwLock::new(discovery)),
-        );
+        let app = create_router(config, std::sync::Arc::new(discovery));
 
         // Make multiple concurrent requests
         let mut handles = vec![];
@@ -249,10 +217,7 @@ mod route_tests {
     async fn test_health_response_format() {
         let config = create_test_config();
         let discovery = ModelDiscovery::new(config.aperture.clone());
-        let app = create_router(
-            config,
-            std::sync::Arc::new(tokio::sync::RwLock::new(discovery)),
-        );
+        let app = create_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
             .uri("/health")

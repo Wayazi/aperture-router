@@ -23,8 +23,7 @@ pub async fn chat_completions(
     Json(request): Json<ChatCompletionRequest>,
 ) -> impl axum::response::IntoResponse {
     // Validate model exists
-    let discovery = discovery.read().await;
-    if !discovery.is_valid_model(&request.model) {
+    if !discovery.is_valid_model(&request.model).await {
         warn!("Invalid model requested: {}", request.model);
         return (
             StatusCode::BAD_REQUEST,
@@ -38,7 +37,6 @@ pub async fn chat_completions(
         )
             .into_response();
     }
-    drop(discovery);
 
     debug!("Valid model: {}", request.model);
     proxy_handler::<ChatCompletionRequest>(
