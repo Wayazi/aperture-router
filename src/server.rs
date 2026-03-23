@@ -66,6 +66,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
                 axum::http::header::CONTENT_TYPE,
                 axum::http::header::AUTHORIZATION,
                 axum::http::header::ACCEPT,
+                axum::http::HeaderName::from_static("x-api-key"),
             ])
             .allow_credentials(true)
     } else {
@@ -89,6 +90,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
                     axum::http::header::CONTENT_TYPE,
                     axum::http::header::AUTHORIZATION,
                     axum::http::header::ACCEPT,
+                    axum::http::HeaderName::from_static("x-api-key"),
                 ])
                 .allow_credentials(true),
             Err(e) => {
@@ -115,6 +117,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
                         axum::http::header::CONTENT_TYPE,
                         axum::http::header::AUTHORIZATION,
                         axum::http::header::ACCEPT,
+                        axum::http::HeaderName::from_static("x-api-key"),
                     ])
                     .allow_credentials(true)
             }
