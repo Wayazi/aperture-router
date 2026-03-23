@@ -4,6 +4,7 @@
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use crate::server::AppState;
 
@@ -30,18 +31,23 @@ struct ModelInfo {
 /// **Authentication:** Requires admin API key
 ///
 /// **Response:** JSON with success status, message, and updated model list
+#[must_use]
 pub async fn refresh_models(State(state): State<AppState>) -> impl IntoResponse {
+    let request_id = Uuid::new_v4();
+
     info!(
+        request_id = %request_id,
         operation = "admin_refresh_models",
         status = "started",
         "Admin operation: Model refresh requested"
     );
 
-    let discovery = &state.3;
+    let discovery = &state.discovery;
 
     match discovery.fetch_models().await {
         Ok(models) => {
             info!(
+                request_id = %request_id,
                 operation = "admin_refresh_models",
                 status = "success",
                 models_count = models.len(),
@@ -67,6 +73,7 @@ pub async fn refresh_models(State(state): State<AppState>) -> impl IntoResponse 
         }
         Err(e) => {
             warn!(
+                request_id = %request_id,
                 operation = "admin_refresh_models",
                 status = "failed",
                 error = ?e,
@@ -98,14 +105,18 @@ struct StatsResponse {
     version: String,
 }
 
+#[must_use]
 pub async fn get_stats(State(state): State<AppState>) -> impl IntoResponse {
+    let request_id = Uuid::new_v4();
+
     info!(
+        request_id = %request_id,
         operation = "admin_get_stats",
         status = "started",
         "Admin operation: Stats requested"
     );
 
-    let discovery = &state.3;
+    let discovery = &state.discovery;
     let models = discovery.get_models().await;
 
     let model_info: Vec<ModelInfo> = models
@@ -117,6 +128,7 @@ pub async fn get_stats(State(state): State<AppState>) -> impl IntoResponse {
         .collect();
 
     info!(
+        request_id = %request_id,
         operation = "admin_get_stats",
         status = "success",
         models_count = models.len(),

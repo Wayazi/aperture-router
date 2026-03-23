@@ -3,8 +3,8 @@ use serde_json::json;
 
 use crate::server::AppState;
 
-pub async fn models(State((_, _, _, discovery, _)): State<AppState>) -> impl IntoResponse {
-    let models = discovery.get_models().await;
+pub async fn models(State(state): State<AppState>) -> impl IntoResponse {
+    let models = state.discovery.get_models().await;
     Json(json!({
         "object": "list",
         "data": models
