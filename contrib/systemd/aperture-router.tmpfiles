@@ -1,0 +1,7 @@
+# /etc/tmpfiles.d/aperture-router.conf
+# Create state directory for aperture-router
+#
+# Type Path Mode UID GID Age Argument
+d /var/lib/aperture-router 0750 aperture-router aperture-router - -
+d /var/lib/aperture-router/cache 0750 aperture-router aperture-router - -
+d /etc/aperture-router 0755 root root - -
