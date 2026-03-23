@@ -5,6 +5,7 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::config::ApertureConfig;
@@ -26,7 +27,7 @@ pub struct ModelsResponse {
 pub struct ModelDiscovery {
     client: Client,
     aperture_config: ApertureConfig,
-    models: Arc<Vec<Model>>,
+    models: Arc<RwLock<Vec<Model>>>,
 }
 
 impl ModelDiscovery {
@@ -40,11 +41,11 @@ impl ModelDiscovery {
         Self {
             client,
             aperture_config,
-            models: Arc::new(Vec::new()),
+            models: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    pub async fn fetch_models(&mut self) -> anyhow::Result<Vec<Model>> {
+    pub async fn fetch_models(&self) -> anyhow::Result<Vec<Model>> {
         // Validate and parse base URL
         let base_url = Url::parse(&self.aperture_config.base_url)
             .map_err(|e| anyhow::anyhow!("Invalid base_url: {}", e))?;
@@ -83,16 +84,24 @@ impl ModelDiscovery {
 
         info!("Discovered {} models", models_response.data.len());
 
-        self.models = Arc::new(models_response.data.clone());
-        Ok(models_response.data)
+        // Update the models using internal mutability
+        let mut models = self.models.write().await;
+        *models = models_response.data.clone();
+        Ok(models.clone())
     }
 
-    pub fn get_models(&self) -> Arc<Vec<Model>> {
-        Arc::clone(&self.models)
+    pub async fn get_models(&self) -> Vec<Model> {
+        self.models.read().await.clone()
     }
 
     /// Check if a model ID is valid (exists in discovered models)
-    pub fn is_valid_model(&self, model_id: &str) -> bool {
-        self.models.iter().any(|m| m.id == model_id)
+    pub async fn is_valid_model(&self, model_id: &str) -> bool {
+        let models = self.models.read().await;
+        models.iter().any(|m| m.id == model_id)
+    }
+
+    /// Get the number of discovered models
+    pub async fn model_count(&self) -> usize {
+        self.models.read().await.len()
     }
 }

@@ -34,8 +34,10 @@ mod config_tests {
 
     #[test]
     fn test_config_server_addr_invalid() {
-        let mut config = Config::default();
-        config.port = 0;
+        let config = Config {
+            port: 0,
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(result.is_err(), "Port 0 should be invalid in validation");
         assert!(result.unwrap_err().contains("Port cannot be 0"));
@@ -93,8 +95,10 @@ mod config_tests {
 
     #[test]
     fn test_config_validation_port_zero() {
-        let mut config = Config::default();
-        config.port = 0;
+        let config = Config {
+            port: 0,
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Port cannot be 0"));
@@ -320,11 +324,11 @@ mod config_tests {
 
     #[test]
     fn test_model_aliases() {
-        let mut config = Config::default();
-        config.model_aliases = {
-            let mut aliases = HashMap::new();
-            aliases.insert("gpt-4".to_string(), "gpt-4-turbo-preview".to_string());
-            aliases
+        let mut aliases = HashMap::new();
+        aliases.insert("gpt-4".to_string(), "gpt-4-turbo-preview".to_string());
+        let config = Config {
+            model_aliases: aliases,
+            ..Default::default()
         };
 
         assert_eq!(
@@ -335,12 +339,12 @@ mod config_tests {
 
     #[test]
     fn test_trusted_proxies() {
-        let mut cors_config = CorsConfig::default();
-        cors_config.trusted_proxies = {
-            let mut proxies = HashSet::new();
-            proxies.insert(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-            proxies.insert(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
-            proxies
+        let mut proxies = HashSet::new();
+        proxies.insert(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+        proxies.insert(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+        let cors_config = CorsConfig {
+            trusted_proxies: proxies,
+            ..Default::default()
         };
 
         assert_eq!(cors_config.trusted_proxies.len(), 2);

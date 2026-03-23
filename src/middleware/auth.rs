@@ -8,18 +8,28 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use tokio::sync::RwLock;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
+
+/// Helper to hash an API key for logging (without exposing the actual key)
+fn hash_api_key(key: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    format!("key_{:x}", hasher.finish())
+}
 
 /// Authentication state with rate limiting
 #[derive(Clone)]
 pub struct AuthState {
     pub api_keys: Vec<String>,
+    pub admin_api_keys: Vec<String>,
     pub failed_attempts: Arc<RwLock<HashMap<IpAddr, Vec<Instant>>>>,
     pub max_attempts: usize,
     pub ban_duration: Duration,
@@ -29,8 +39,21 @@ pub struct AuthState {
 
 impl AuthState {
     pub fn new(security_config: &SecurityConfig, cors_config: &CorsConfig) -> Self {
+        // Security: Do NOT fall back to regular keys for admin operations
+        // Admin endpoints require explicit admin_api_keys configuration
+        let admin_keys = security_config.admin_api_keys.clone();
+
+        // Log a warning if admin keys are not configured
+        if admin_keys.is_empty() {
+            tracing::warn!(
+                "No admin API keys configured. Admin endpoints (/admin/*) will be inaccessible."
+            );
+            tracing::info!("To enable admin access, add admin_api_keys to your configuration.");
+        }
+
         Self {
             api_keys: security_config.api_keys.clone(),
+            admin_api_keys: admin_keys,
             failed_attempts: Arc::new(RwLock::new(HashMap::new())),
             max_attempts: security_config.max_auth_attempts,
             ban_duration: Duration::from_secs(security_config.ban_duration_secs),
@@ -42,6 +65,11 @@ impl AuthState {
     /// Check if authentication is enabled
     pub fn is_enabled(&self) -> bool {
         !self.api_keys.is_empty()
+    }
+
+    /// Check if admin authentication is enabled
+    pub fn is_admin_enabled(&self) -> bool {
+        !self.admin_api_keys.is_empty()
     }
 
     /// Check rate limit and record failure atomically
@@ -100,6 +128,14 @@ impl AuthState {
     pub fn validate_api_key(&self, key: &str) -> bool {
         // Use HashSet for O(1) lookup
         self.api_keys
+            .iter()
+            .any(|valid_key| valid_key.as_bytes().ct_eq(key.as_bytes()).into())
+    }
+
+    /// Validate admin API key - checks admin_api_keys specifically
+    pub fn validate_admin_key(&self, key: &str) -> bool {
+        // Use HashSet for O(1) lookup with constant-time comparison
+        self.admin_api_keys
             .iter()
             .any(|valid_key| valid_key.as_bytes().ct_eq(key.as_bytes()).into())
     }
@@ -187,6 +223,84 @@ pub async fn auth_middleware(
         warn!(
             "Authentication failed from: {} (missing or invalid API key)",
             client_ip
+        );
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+/// Admin-specific authentication middleware
+/// Requires admin API key for access to administrative endpoints
+pub async fn admin_auth_middleware(
+    State((config, auth)): State<(Arc<Config>, Arc<AuthState>)>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // Admin endpoints require explicit admin API key configuration
+    if !auth.is_admin_enabled() {
+        if config.security.require_auth_in_prod && !cfg!(debug_assertions) {
+            error!("Admin endpoint accessed but no admin API keys configured");
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        // In dev mode, allow access for testing
+        if cfg!(debug_assertions) {
+            tracing::warn!("Admin endpoint accessed in dev mode without admin keys configured");
+            return Ok(next.run(request).await);
+        }
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // Extract client IP
+    let client_ip = match extract_client_ip(&request, &auth.trusted_proxies) {
+        Ok(ip) => ip,
+        Err(_) => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    // Check rate limit and record failure atomically
+    if let Err(status) = auth.check_and_record_failure(client_ip).await {
+        warn!(
+            "Rate-limited admin authentication attempt from: {}",
+            client_ip
+        );
+        return Err(status);
+    }
+
+    // Check for API key in headers
+    let api_key = request
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .or_else(|| {
+            request
+                .headers()
+                .get("x-api-key")
+                .and_then(|h| h.to_str().ok())
+        });
+
+    // Use constant-time comparison with admin keys
+    let is_valid = match api_key {
+        Some(key) => auth.validate_admin_key(key),
+        None => false,
+    };
+
+    if is_valid {
+        info!(
+            client_ip = %client_ip,
+            key_hash = hash_api_key(api_key.unwrap_or("")),
+            endpoint = "admin",
+            "Admin authentication successful"
+        );
+        auth.record_success(client_ip).await;
+        Ok(next.run(request).await)
+    } else {
+        warn!(
+            client_ip = %client_ip,
+            endpoint = "admin",
+            reason = match api_key {
+                Some(_) => "invalid_admin_key",
+                None => "missing_api_key",
+            },
+            "Admin authentication failed"
         );
         Err(StatusCode::UNAUTHORIZED)
     }

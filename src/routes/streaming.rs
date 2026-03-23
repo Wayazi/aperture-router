@@ -115,7 +115,11 @@ pub async fn handle_proxy_stream(
 
 /// Process an SSE chunk from upstream, detecting tool calls and extended thinking
 /// Returns a Vec of Events (one per SSE line in the chunk)
-fn process_sse_chunk_lines(chunk: &str, include_thinking: bool, max_json_depth: usize) -> Vec<Event> {
+fn process_sse_chunk_lines(
+    chunk: &str,
+    include_thinking: bool,
+    max_json_depth: usize,
+) -> Vec<Event> {
     let mut event_type = "data".to_string();
     let mut events = Vec::new();
 
@@ -138,25 +142,26 @@ fn process_sse_chunk_lines(chunk: &str, include_thinking: bool, max_json_depth: 
 
             // Parse JSON to detect tool calls and extended thinking
             // Limit JSON nesting depth to prevent DoS via deeply nested structures
-            let should_include = if let Ok(value) = parse_json_with_depth_limit(json_data, max_json_depth) {
-                // Check for extended thinking (Anthropic thinking blocks)
-                if is_thinking_block(&value) {
-                    include_thinking
-                } else {
-                    // Check for OpenAI tool_calls in delta
-                    if check_for_tool_calls_openai(&value) {
-                        info!("Streaming: Detected tool call (OpenAI format)");
-                    }
+            let should_include =
+                if let Ok(value) = parse_json_with_depth_limit(json_data, max_json_depth) {
+                    // Check for extended thinking (Anthropic thinking blocks)
+                    if is_thinking_block(&value) {
+                        include_thinking
+                    } else {
+                        // Check for OpenAI tool_calls in delta
+                        if check_for_tool_calls_openai(&value) {
+                            info!("Streaming: Detected tool call (OpenAI format)");
+                        }
 
-                    // Check for Anthropic tool_use content blocks
-                    if check_for_tool_calls_anthropic(&value) {
-                        info!("Streaming: Detected tool_use (Anthropic format)");
+                        // Check for Anthropic tool_use content blocks
+                        if check_for_tool_calls_anthropic(&value) {
+                            info!("Streaming: Detected tool_use (Anthropic format)");
+                        }
+                        true // Include non-thinking data
                     }
-                    true // Include non-thinking data
-                }
-            } else {
-                true // Not valid JSON, include it anyway
-            };
+                } else {
+                    true // Not valid JSON, include it anyway
+                };
 
             if should_include {
                 // Create SSE event with proper type
