@@ -1,0 +1,11 @@
+# /etc/sysconfig/aperture-router
+# Environment variables for aperture-router systemd service
+#
+# Variables set here will override those in config.toml
+#
+# Example:
+# APERTURE_BASE_URL=http://100.113.103.69
+# APERTURE_ROUTER_HOST=0.0.0.0
+# APERTURE_ROUTER_PORT=8080
+# RUST_LOG=info
+# APERTURE_API_KEY=your-api-key-here

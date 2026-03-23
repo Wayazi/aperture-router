@@ -1,0 +1,32 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Config
+config.toml
+.env
+
+# Archive (internal development files)
+.archive/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Build
+*.orig
+*.rej
+
+# Claude Code
+.claude/
+SESSION-*.md

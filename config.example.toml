@@ -1,0 +1,62 @@
+# Aperture Router Configuration
+
+[server]
+# Server host (use 127.0.0.1 for local only, 0.0.0.0 for all interfaces)
+host = "127.0.0.1"
+# Server port (8765 chosen to avoid common conflicts)
+port = 8765
+
+[aperture]
+# Aperture gateway base URL (without /v1)
+# Example: http://100.100.100.100 or http://ai.your-tailnet.ts.net
+base_url = "http://100.100.100.100"
+# Optional API key if Aperture requires authentication
+# api_key = "your-strong-api-key-here"
+# How often to refresh the model list (in seconds)
+model_refresh_interval_secs = 300
+
+[http]
+# Connection timeout in seconds
+connect_timeout_secs = 10
+# Request timeout in seconds
+request_timeout_secs = 300
+# SSE keep-alive interval in seconds
+sse_keep_alive_secs = 15
+
+[cors]
+# Allowed origins for CORS (use "*" for wildcard development only - NOT FOR PRODUCTION)
+allowed_origins = ["http://localhost:3000", "http://localhost:8080"]
+# Trusted proxy IPs (for x-forwarded-for header validation)
+# Add your reverse proxy IPs here if you trust them
+trusted_proxies = []
+
+[rate_limit]
+# Standard rate limiting
+requests_per_second = 10
+burst_size = 30
+# Health endpoint rate limiting (more lenient)
+health_requests_per_second = 20
+health_burst_size = 50
+
+[security]
+# API keys for authentication (empty = no authentication)
+# Generate strong keys with: openssl rand -base64 32
+api_keys = []
+# Maximum request body size (prevents DoS via large uploads)
+max_body_size_bytes = 10485760  # 10MB
+# Maximum failed authentication attempts per window
+max_auth_attempts = 5
+# Authentication window duration in seconds
+auth_window_secs = 60  # 1 minute
+# Ban duration after max attempts (in seconds)
+ban_duration_secs = 300  # 5 minutes
+# Require authentication in production (set false for development)
+require_auth_in_prod = true
+# Maximum JSON nesting depth (prevents DoS via deeply nested JSON)
+max_json_depth = 256
+# Maximum streaming response size (prevents DoS via long streams)
+max_streaming_size_bytes = 104857600  # 100MB
+
+[model_aliases]
+# Add model name mappings here if needed
+# example_model = "actual-model-name"

@@ -1,0 +1,14 @@
+pkgbase = aperture-router
+	pkgdesc = Universal AI router for Tailscale Aperture
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/Wayazi/aperture-router
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = cargo
+	depends = gcc-libs
+	source = aperture-router-0.1.0.tar.gz::https://github.com/Wayazi/aperture-router/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = aperture-router
