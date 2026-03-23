@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:  # Allow manual trigger
 
 permissions:
   contents: write
@@ -11,6 +12,7 @@ permissions:
 jobs:
   build:
     name: Build Release Binaries
+    if: github.ref_type == 'tag' && github.repository_owner == 'Wayazi'
     runs-on: ubuntu-latest
     strategy:
       matrix:
