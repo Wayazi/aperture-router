@@ -126,8 +126,8 @@ pub struct SecurityConfig {
     #[serde(default)]
     pub api_keys: Vec<String>,
 
-    /// Admin API keys for administrative operations (empty means no separate admin keys)
-    /// If empty, regular api_keys are used for admin operations
+    /// Admin API keys for administrative operations
+    /// If empty, admin endpoints (/admin/*) will be inaccessible in production
     #[serde(default)]
     pub admin_api_keys: Vec<String>,
 
@@ -306,24 +306,24 @@ impl Config {
 
         // Override with environment variables
         if let Ok(host) = std::env::var("APERTURE_HOST") {
-            tracing::warn!("Overriding host with environment variable: {}", host);
+            tracing::info!("Overriding host with environment variable: {}", host);
             config.host = host;
         }
 
         if let Ok(port) = std::env::var("APERTURE_PORT") {
-            tracing::warn!("Overriding port with environment variable: {}", port);
+            tracing::info!("Overriding port with environment variable: {}", port);
             config.port = port
                 .parse()
                 .map_err(|e| anyhow::anyhow!("Invalid APERTURE_PORT: {}", e))?;
         }
 
         if let Ok(base_url) = std::env::var("APERTURE_BASE_URL") {
-            tracing::warn!("Overriding base_url with environment variable");
+            tracing::info!("Overriding base_url with environment variable");
             config.aperture.base_url = base_url;
         }
 
         if let Ok(api_key) = std::env::var("APERTURE_API_KEY") {
-            tracing::warn!("Overriding api_key with environment variable");
+            tracing::info!("Overriding api_key with environment variable");
             config.aperture.api_key = Some(api_key);
         }
 

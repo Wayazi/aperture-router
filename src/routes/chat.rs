@@ -19,11 +19,11 @@ impl HasModel for ChatCompletionRequest {
 
 /// OpenAI chat completions endpoint
 pub async fn chat_completions(
-    State((_, _, proxy_client, discovery, _)): State<AppState>,
+    State(state): State<AppState>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> impl axum::response::IntoResponse {
     // Validate model exists
-    if !discovery.is_valid_model(&request.model).await {
+    if !state.discovery.is_valid_model(&request.model).await {
         warn!("Invalid model requested: {}", request.model);
         return (
             StatusCode::BAD_REQUEST,
@@ -40,7 +40,7 @@ pub async fn chat_completions(
 
     debug!("Valid model: {}", request.model);
     proxy_handler::<ChatCompletionRequest>(
-        State(proxy_client),
+        State(state.proxy_client),
         Json(request),
         "v1/chat/completions",
     )

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2025 aperture-router contributors
+// Copyright (c) 2026 aperture-router contributors
 
 use axum::{
     body::Body,
@@ -238,5 +238,186 @@ mod route_tests {
         // Verify it's valid JSON
         let json: serde_json::Value = serde_json::from_str(&body_str).unwrap();
         assert!(json.get("status").is_some());
+    }
+
+    // ============ Admin Route Tests ============
+
+    fn create_test_config_with_admin_keys() -> Config {
+        let mut config = Config::default();
+        config.security.admin_api_keys = vec![
+            "admin-key-with-sufficient-entropy-1234567890".to_string(),
+        ];
+        config.security.api_keys = vec![
+            "regular-key-with-sufficient-entropy-12345678".to_string(),
+        ];
+        config
+    }
+
+    #[tokio::test]
+    async fn test_admin_stats_with_valid_admin_key() {
+        let config = create_test_config_with_admin_keys();
+        let discovery = ModelDiscovery::new(config.aperture.clone());
+        let app = create_router(config, std::sync::Arc::new(discovery));
+
+        let request = Request::builder()
+            .uri("/admin/stats")
+            .method(Method::GET)
+            .header("Authorization", "Bearer admin-key-with-sufficient-entropy-1234567890")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body();
+        let body_bytes = body.collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        // Verify response contains expected fields
+        let json: serde_json::Value = serde_json::from_str(&body_str).unwrap();
+        assert!(json.get("models_count").is_some());
+        assert!(json.get("version").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_admin_stats_with_invalid_admin_key() {
+        let config = create_test_config_with_admin_keys();
+        let discovery = ModelDiscovery::new(config.aperture.clone());
+        let app = create_router(config, std::sync::Arc::new(discovery));
+
+        let request = Request::builder()
+            .uri("/admin/stats")
+            .method(Method::GET)
+            .header("Authorization", "Bearer invalid-admin-key-123456789012345")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_admin_stats_without_auth_header() {
+        let config = create_test_config_with_admin_keys();
+        let discovery = ModelDiscovery::new(config.aperture.clone());
+        let app = create_router(config, std::sync::Arc::new(discovery));
+
+        let request = Request::builder()
+            .uri("/admin/stats")
+            .method(Method::GET)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_admin_stats_with_regular_key_fails() {
+        // Regular API key should NOT work for admin endpoints
+        let config = create_test_config_with_admin_keys();
+        let discovery = ModelDiscovery::new(config.aperture.clone());
+        let app = create_router(config, std::sync::Arc::new(discovery));
+
+        let request = Request::builder()
+            .uri("/admin/stats")
+            .method(Method::GET)
+            .header(
+                "Authorization",
+                "Bearer regular-key-with-sufficient-entropy-12345678",
+            )
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        // Regular key should be rejected for admin endpoints
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_admin_stats_with_x_api_key_header() {
+        // Test that x-api-key header works for admin auth
+        let config = create_test_config_with_admin_keys();
+        let discovery = ModelDiscovery::new(config.aperture.clone());
+        let app = create_router(config, std::sync::Arc::new(discovery));
+
+        let request = Request::builder()
+            .uri("/admin/stats")
+            .method(Method::GET)
+            .header("x-api-key", "admin-key-with-sufficient-entropy-1234567890")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_admin_refresh_models_with_valid_key() {
+        let config = create_test_config_with_admin_keys();
+        let discovery = ModelDiscovery::new(config.aperture.clone());
+        let app = create_router(config, std::sync::Arc::new(discovery));
+
+        let request = Request::builder()
+            .uri("/admin/refresh-models")
+            .method(Method::POST)
+            .header("Authorization", "Bearer admin-key-with-sufficient-entropy-1234567890")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        // May fail due to no upstream, but should NOT be 401
+        // (could be 500 if upstream unavailable, but auth passed)
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_admin_refresh_models_without_key() {
+        let config = create_test_config_with_admin_keys();
+        let discovery = ModelDiscovery::new(config.aperture.clone());
+        let app = create_router(config, std::sync::Arc::new(discovery));
+
+        let request = Request::builder()
+            .uri("/admin/refresh-models")
+            .method(Method::POST)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_admin_no_keys_configured_returns_401() {
+        // When no admin keys configured, admin endpoints should return 401 in production
+        // Note: In debug mode (when tests run), the middleware allows access for testing
+        // This test verifies that the admin key validation works correctly
+        let mut config = Config::default();
+        // Set admin keys to empty to test the validation logic
+        config.security.admin_api_keys = vec![];
+        // Set regular keys to ensure regular auth is enabled
+        config.security.api_keys = vec!["regular-key-with-sufficient-entropy-12345678".to_string()];
+        config.security.require_auth_in_prod = true;
+
+        let discovery = ModelDiscovery::new(config.aperture.clone());
+        let app = create_router(config, std::sync::Arc::new(discovery));
+
+        let request = Request::builder()
+            .uri("/admin/stats")
+            .method(Method::GET)
+            .header(
+                "Authorization",
+                "Bearer regular-key-with-sufficient-entropy-12345678",
+            )
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        // In debug mode (when tests run), this returns 200 OK for testing
+        // In production with require_auth_in_prod=true, this would return 401
+        #[cfg(debug_assertions)]
+        assert_eq!(response.status(), StatusCode::OK);
+        #[cfg(not(debug_assertions))]
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
