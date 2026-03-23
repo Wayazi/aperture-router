@@ -1,0 +1,46 @@
+post_install() {
+  cat <<EOF
+
+==> aperture-router installation complete!
+
+To get started:
+
+1. Create a configuration file:
+   sudo cp /usr/share/doc/aperture-router/config.example.toml /etc/aperture-router/config.toml
+
+2. Edit the configuration to set your Aperture gateway URL:
+   sudo editor /etc/aperture-router/config.toml
+
+3. Start the service:
+   sudo systemctl enable --now aperture-router
+
+4. Check the service status:
+   sudo systemctl status aperture-router
+
+5. View logs:
+   journalctl -u aperture-router -f
+
+For more information, visit: https://github.com/Wayazi/aperture-router
+
+EOF
+}
+
+post_upgrade() {
+  cat <<EOF
+
+==> aperture-router has been upgraded!
+
+Restart the service to apply changes:
+  sudo systemctl restart aperture-router
+
+EOF
+}
+
+pre_remove() {
+  cat <<EOF
+
+==> Stopping aperture-router service...
+  sudo systemctl stop aperture-router
+
+EOF
+}
