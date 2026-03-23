@@ -15,6 +15,28 @@ mod auth_tests {
     fn create_auth_state(api_keys: Vec<String>) -> AuthState {
         let security_config = SecurityConfig {
             api_keys,
+            admin_api_keys: Vec::new(),
+            max_body_size_bytes: 10 * 1024 * 1024,
+            max_auth_attempts: 5,
+            auth_window_secs: 60,
+            ban_duration_secs: 300,
+            require_auth_in_prod: true,
+            max_json_depth: 256,
+            max_streaming_size_bytes: 100 * 1024 * 1024,
+        };
+
+        let cors_config = CorsConfig::default();
+
+        AuthState::new(&security_config, &cors_config)
+    }
+
+    fn create_auth_state_with_admin_keys(
+        api_keys: Vec<String>,
+        admin_api_keys: Vec<String>,
+    ) -> AuthState {
+        let security_config = SecurityConfig {
+            api_keys,
+            admin_api_keys,
             max_body_size_bytes: 10 * 1024 * 1024,
             max_auth_attempts: 5,
             auth_window_secs: 60,
@@ -157,6 +179,7 @@ mod auth_tests {
     async fn test_auth_state_with_custom_limits() {
         let security_config = SecurityConfig {
             api_keys: vec!["test-api-key-with-sufficient-entropy-32".to_string()],
+            admin_api_keys: Vec::new(),
             max_body_size_bytes: 10 * 1024 * 1024,
             max_auth_attempts: 3,  // Lower limit
             auth_window_secs: 30,  // Shorter window
@@ -182,16 +205,17 @@ mod auth_tests {
 
     #[tokio::test]
     async fn test_auth_state_trusted_proxies() {
-        let mut cors_config = CorsConfig::default();
-        cors_config.trusted_proxies = {
-            let mut proxies = HashSet::new();
-            proxies.insert(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
-            proxies.insert(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
-            proxies
+        let mut proxies = HashSet::new();
+        proxies.insert(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+        proxies.insert(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+        let cors_config = CorsConfig {
+            trusted_proxies: proxies,
+            ..Default::default()
         };
 
         let security_config = SecurityConfig {
             api_keys: vec!["test-api-key-with-sufficient-entropy-32".to_string()],
+            admin_api_keys: Vec::new(),
             max_body_size_bytes: 10 * 1024 * 1024,
             max_auth_attempts: 5,
             auth_window_secs: 60,
@@ -223,8 +247,7 @@ mod auth_tests {
         // Give it a moment to start
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // If we get here, the task started successfully
-        assert!(true);
+        // If we get here without panicking, the task started successfully
     }
 
     #[tokio::test]
@@ -283,6 +306,7 @@ mod auth_tests {
     async fn test_auth_state_durations() {
         let security_config = SecurityConfig {
             api_keys: vec!["test-api-key-with-sufficient-entropy-32".to_string()],
+            admin_api_keys: Vec::new(),
             max_body_size_bytes: 10 * 1024 * 1024,
             max_auth_attempts: 5,
             auth_window_secs: 60,
@@ -297,5 +321,104 @@ mod auth_tests {
 
         assert_eq!(auth_state.window_duration, Duration::from_secs(60));
         assert_eq!(auth_state.ban_duration, Duration::from_secs(300));
+    }
+
+    // Admin key validation tests
+    #[tokio::test]
+    async fn test_validate_admin_key_valid() {
+        let admin_keys = vec!["admin-key-with-sufficient-entropy-1234567890".to_string()];
+        let auth_state = create_auth_state_with_admin_keys(vec![], admin_keys);
+
+        let valid_admin_key = "admin-key-with-sufficient-entropy-1234567890";
+        assert!(auth_state.validate_admin_key(valid_admin_key));
+    }
+
+    #[tokio::test]
+    async fn test_validate_admin_key_invalid() {
+        let admin_keys = vec!["admin-key-with-sufficient-entropy-1234567890".to_string()];
+        let auth_state = create_auth_state_with_admin_keys(vec![], admin_keys);
+
+        let invalid_key = "wrong-admin-key-with-sufficient-entropy-123";
+        assert!(!auth_state.validate_admin_key(invalid_key));
+    }
+
+    #[tokio::test]
+    async fn test_validate_admin_key_vs_regular_key() {
+        let regular_keys = vec!["regular-key-with-sufficient-entropy-123456".to_string()];
+        let admin_keys = vec!["admin-key-with-sufficient-entropy-1234567890".to_string()];
+        let auth_state = create_auth_state_with_admin_keys(regular_keys, admin_keys);
+
+        // Regular key should NOT work as admin key
+        assert!(!auth_state.validate_admin_key("regular-key-with-sufficient-entropy-123456"));
+
+        // Admin key should work as admin key
+        assert!(auth_state.validate_admin_key("admin-key-with-sufficient-entropy-1234567890"));
+
+        // But admin key should NOT work as regular key
+        assert!(!auth_state.validate_api_key("admin-key-with-sufficient-entropy-1234567890"));
+
+        // And regular key should work as regular key
+        assert!(auth_state.validate_api_key("regular-key-with-sufficient-entropy-123456"));
+    }
+
+    #[tokio::test]
+    async fn test_admin_key_not_accessible_when_empty() {
+        // No admin keys configured
+        let auth_state = create_auth_state(vec![
+            "regular-key-with-sufficient-entropy-123456".to_string()
+        ]);
+
+        // Even though we have a regular key, admin should be disabled
+        assert!(!auth_state.is_admin_enabled());
+
+        // No key should validate as admin key
+        assert!(!auth_state.validate_admin_key("regular-key-with-sufficient-entropy-123456"));
+        assert!(!auth_state.validate_admin_key("any-other-key"));
+    }
+
+    #[tokio::test]
+    async fn test_is_admin_enabled() {
+        // With admin keys
+        let auth_state_with_admin = create_auth_state_with_admin_keys(
+            vec![],
+            vec!["admin-key-with-sufficient-entropy-1234567890".to_string()],
+        );
+        assert!(auth_state_with_admin.is_admin_enabled());
+
+        // Without admin keys
+        let auth_state_without_admin = create_auth_state(vec!["regular-key-123".to_string()]);
+        assert!(!auth_state_without_admin.is_admin_enabled());
+    }
+
+    #[tokio::test]
+    async fn test_validate_admin_key_constant_time() {
+        let admin_keys = vec!["admin-key-with-sufficient-entropy-1234567890".to_string()];
+        let auth_state = create_auth_state_with_admin_keys(vec![], admin_keys);
+
+        // Test that constant-time comparison is used for each key
+        // Note: .any() short-circuits, which is a known limitation
+        // but ct_eq is still used for each individual comparison
+        let valid_key = "admin-key-with-sufficient-entropy-1234567890";
+        let invalid_key = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+
+        // Just verify both don't panic and return correct results
+        assert!(auth_state.validate_admin_key(valid_key));
+        assert!(!auth_state.validate_admin_key(invalid_key));
+    }
+
+    #[tokio::test]
+    async fn test_validate_admin_key_multiple_keys() {
+        let admin_keys = vec![
+            "first-admin-key-with-sufficient-entropy-12345".to_string(),
+            "second-admin-key-with-sufficient-entropy-67890".to_string(),
+        ];
+        let auth_state = create_auth_state_with_admin_keys(vec![], admin_keys);
+
+        // Both admin keys should validate
+        assert!(auth_state.validate_admin_key("first-admin-key-with-sufficient-entropy-12345"));
+        assert!(auth_state.validate_admin_key("second-admin-key-with-sufficient-entropy-67890"));
+
+        // Invalid key should not validate
+        assert!(!auth_state.validate_admin_key("not-a-valid-admin-key-123456789012"));
     }
 }

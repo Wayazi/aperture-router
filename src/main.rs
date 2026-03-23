@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Initialize and fetch models
-    let mut discovery = ModelDiscovery::new(config.aperture.clone());
+    let discovery = Arc::new(ModelDiscovery::new(config.aperture.clone()));
     info!("Fetching models from Aperture...");
     let models = discovery.fetch_models().await?;
     info!("Discovered {} models", models.len());
@@ -66,10 +66,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Create router
-    let app = server::create_router(
-        config.clone(),
-        Arc::new(tokio::sync::RwLock::new(discovery)),
-    );
+    let app = server::create_router(config.clone(), Arc::clone(&discovery));
 
     // Start server with graceful shutdown
     let addr = config.server_addr()?;

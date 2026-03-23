@@ -85,7 +85,8 @@ mod proxy_tests {
             sse_keep_alive_secs: 15,
         };
 
-        let proxy_client = ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
+        let proxy_client =
+            ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
 
         let request_body = serde_json::json!({
             "model": "gpt-3.5-turbo",
@@ -136,7 +137,8 @@ mod proxy_tests {
             sse_keep_alive_secs: 15,
         };
 
-        let proxy_client = ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
+        let proxy_client =
+            ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
 
         let request_body = serde_json::json!({"model": "gpt-3.5-turbo"});
 
@@ -178,7 +180,8 @@ mod proxy_tests {
             sse_keep_alive_secs: 15,
         };
 
-        let proxy_client = ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
+        let proxy_client =
+            ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
 
         let request_body = serde_json::json!({"model": "gpt-3.5-turbo"});
 
@@ -219,7 +222,8 @@ mod proxy_tests {
             sse_keep_alive_secs: 15,
         };
 
-        let proxy_client = ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
+        let proxy_client =
+            ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
 
         let request_body = serde_json::json!({"model": "gpt-3.5-turbo"});
 
@@ -247,7 +251,8 @@ mod proxy_tests {
             sse_keep_alive_secs: 15,
         };
 
-        let proxy_client = ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
+        let proxy_client =
+            ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
 
         assert_eq!(proxy_client.base_url(), "http://test.example.com:8080");
     }
@@ -301,7 +306,8 @@ mod proxy_tests {
             sse_keep_alive_secs: 15,
         };
 
-        let proxy_client = ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
+        let proxy_client =
+            ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
 
         let request_body = serde_json::json!({"model": "gpt-3.5-turbo"});
 
@@ -342,7 +348,8 @@ mod proxy_tests {
             sse_keep_alive_secs: 15,
         };
 
-        let proxy_client = ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
+        let proxy_client =
+            ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
 
         let request_body = serde_json::json!({"model": "gpt-3.5-turbo"});
 
@@ -371,7 +378,8 @@ mod proxy_tests {
             sse_keep_alive_secs: 15,
         };
 
-        let proxy_client = ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
+        let proxy_client =
+            ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024).unwrap();
 
         let request_body = serde_json::json!({"model": "gpt-3.5-turbo"});
 
