@@ -61,6 +61,9 @@ impl ProxyClient {
         let client = Client::builder()
             .timeout(timeout)
             .connect_timeout(connect_timeout)
+            // CRITICAL: Disable redirects to prevent SSRF bypass
+            // An attacker could redirect to internal IPs (e.g., 169.254.169.254)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {}", e))?;
 
@@ -204,6 +207,69 @@ impl ProxyClient {
         &self.aperture_config.base_url
     }
 
+    /// Get the API key for this client (if configured)
+    pub fn api_key(&self) -> Option<&String> {
+        self.aperture_config.api_key.as_ref()
+    }
+
+    /// Forward a request to a specific URL (for multi-provider support)
+    pub async fn forward_request_to_url(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        api_key: Option<&str>,
+    ) -> anyhow::Result<reqwest::Response> {
+        // Validate URL is properly formed
+        let parsed_url = Url::parse(url)?;
+
+        // Validate scheme is HTTPS or HTTP
+        if !matches!(parsed_url.scheme(), "https" | "http") {
+            return Err(anyhow::anyhow!(
+                "Invalid URL scheme. Only http and https are allowed."
+            ));
+        }
+
+        // SSRF protection: check for metadata endpoints only
+        // Note: We don't block internal IPs here because providers are admin-configured
+        // and may legitimately use Tailscale (100.64.0.0/10), localhost, etc.
+        // The redirect policy (disabled) provides the main SSRF defense.
+        if let Some(host) = parsed_url.host_str() {
+            if is_metadata_endpoint(host) {
+                return Err(anyhow::anyhow!(
+                    "Access to metadata endpoint '{}' is blocked (SSRF protection)",
+                    host
+                ));
+            }
+        }
+
+        debug!("Forwarding request to custom URL: {}", url);
+
+        let mut request = self
+            .client
+            .post(url)
+            .header("Content-Type", "application/json");
+
+        // Add API key if provided
+        if let Some(key) = api_key {
+            request = request.header("x-api-key", key);
+        }
+
+        let response = request.body(body).send().await?;
+
+        // Return error for non-success status codes
+        if !response.status().is_success() {
+            let status = response.status();
+            error!("Upstream request to {} failed with status: {}", url, status);
+            return Err(anyhow::anyhow!(
+                "Upstream service returned error: {}",
+                status.as_u16()
+            ));
+        }
+
+        info!("Request to {} succeeded with status: {}", url, response.status());
+        Ok(response)
+    }
+
     /// Validate endpoint and return parsed URL
     /// Performs endpoint whitelist check, URL parsing, scheme validation, and SSRF protection
     fn validate_endpoint(&self, endpoint: &str) -> anyhow::Result<url::Url> {
@@ -260,8 +326,30 @@ impl ProxyClient {
 fn is_internal_ip(host: &str) -> bool {
     host.parse::<IpAddr>()
         .map(|ip| match ip {
-            IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
-            IpAddr::V6(v6) => v6.is_loopback(),
+            IpAddr::V4(v4) => {
+                v4.is_private() || v4.is_loopback() || v4.is_link_local()
+                // Also block shared/carrier-grade NAT (100.64.0.0/10)
+                || v4.octets()[0] == 100 && (64..=127).contains(&v4.octets()[1])
+            }
+            IpAddr::V6(v6) => {
+                // Check for IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
+                // These can encode internal IPv4 addresses and bypass checks
+                if let Some(v4) = v6.to_ipv4_mapped() {
+                    return v4.is_private()
+                        || v4.is_loopback()
+                        || v4.is_link_local()
+                        || v4.octets()[0] == 100 && (64..=127).contains(&v4.octets()[1]);
+                }
+
+                // Block loopback (::1)
+                v6.is_loopback()
+                // Block unique local addresses (fc00::/7)
+                || v6.is_unique_local()
+                // Block link-local (fe80::/10)
+                || matches!(v6.octets()[0], 0xfe) && (v6.octets()[1] & 0xc0) == 0x80
+                // Block multicast (ff00::/8)
+                || v6.is_multicast()
+            }
         })
         .unwrap_or(false)
 }

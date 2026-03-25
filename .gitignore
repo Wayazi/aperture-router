@@ -5,6 +5,7 @@
 
 # Config
 config.toml
+config_test.toml
 .env
 
 # Archive (internal development files)

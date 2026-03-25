@@ -60,3 +60,62 @@ max_streaming_size_bytes = 104857600  # 100MB
 [model_aliases]
 # Add model name mappings here if needed
 # example_model = "actual-model-name"
+
+# =============================================================================
+# Multi-Provider Configuration
+# =============================================================================
+# Configure multiple AI providers with different endpoint styles.
+# If no provider matches a model, requests fall back to the Aperture gateway.
+
+[[providers]]
+# Provider name (used for logging)
+name = "aperture"
+# Base URL for the provider
+base_url = "http://100.100.100.100"
+# Endpoint style: "openai_v1", "openai_direct", or "anthropic"
+endpoint_style = "openai_v1"
+# Models this provider supports
+models = ["openrouter/free", "claude-3-opus", "gpt-4"]
+# Optional API key for this provider
+# api_key = "your-aperture-api-key"
+# Whether this provider is enabled (default: true)
+enabled = true
+
+[[providers]]
+# Z.ai Credit Plan - OpenAI-compatible v4 endpoints (no /v1 prefix)
+name = "zai-credit"
+base_url = "https://api.z.ai/api/paas/v4"
+endpoint_style = "openai_direct"
+models = ["glm-5", "glm-4.7", "glm-4.7-flash"]
+# Use environment variable for API key: ${ZAI_API_KEY}
+api_key = "your-zai-api-key"
+
+[[providers]]
+# Z.ai Coding Plan - Same v4 endpoint style
+name = "zai-coding"
+base_url = "https://api.z.ai/api/coding/paas/v4"
+endpoint_style = "openai_direct"
+models = ["glm-5-coding", "glm-4.7-coding"]
+# api_key = "your-zai-coding-api-key"
+
+[[providers]]
+# Z.ai Anthropic endpoint - Uses Anthropic message format
+name = "zai-anthropic"
+base_url = "https://api.z.ai/api/anthropic"
+endpoint_style = "anthropic"
+models = ["GLM-5", "glm-4.7"]
+# api_key = "your-zai-api-key"
+
+# =============================================================================
+# Endpoint Style Reference:
+# =============================================================================
+# openai_v1:     Standard OpenAI format
+#               URL = base_url + /v1/chat/completions
+#               URL = base_url + /v1/messages
+#
+# openai_direct: Direct endpoint without /v1 prefix (Z.ai v4 style)
+#               URL = base_url + /chat/completions
+#
+# anthropic:     Anthropic messages endpoint only
+#               URL = base_url + /v1/messages
+# =============================================================================

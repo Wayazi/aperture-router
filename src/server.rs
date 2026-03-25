@@ -14,7 +14,7 @@ use tracing::info;
 
 use crate::{
     config::Config, discovery::models::ModelDiscovery, middleware::AuthState,
-    proxy::client::ProxyClient,
+    proxy::client::ProxyClient, ProviderRegistry,
 };
 
 /// Application state shared across all routes
@@ -26,6 +26,7 @@ pub struct AppState {
     pub auth_state: AuthState,
     pub proxy_client: ProxyClient,
     pub discovery: Arc<ModelDiscovery>,
+    pub provider_registry: Arc<ProviderRegistry>,
     pub cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
@@ -36,6 +37,7 @@ impl AppState {
         auth_state: AuthState,
         proxy_client: ProxyClient,
         discovery: Arc<ModelDiscovery>,
+        provider_registry: Arc<ProviderRegistry>,
         cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     ) -> Self {
         Self {
@@ -43,6 +45,7 @@ impl AppState {
             auth_state,
             proxy_client,
             discovery,
+            provider_registry,
             cleanup_handle,
         }
     }
@@ -118,6 +121,9 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
 pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
     info!("Creating router with authentication and CORS layers");
 
+    // Create provider registry from config
+    let provider_registry = Arc::new(ProviderRegistry::new(config.providers.clone()));
+
     // Create proxy client
     let proxy_client = ProxyClient::new(
         config.aperture.clone(),
@@ -146,6 +152,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
         auth_state.clone(),
         proxy_client.clone(),
         discovery.clone(),
+        provider_registry.clone(),
         cleanup_handle.clone(),
     );
 
@@ -154,6 +161,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
         auth_state.clone(),
         proxy_client.clone(),
         discovery.clone(),
+        provider_registry.clone(),
         cleanup_handle.clone(),
     );
 
