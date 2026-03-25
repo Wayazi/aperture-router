@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 aperture-router contributors
 
-use axum::{extract::State, response::IntoResponse, Json};
-use http::StatusCode;
+use axum::{body::Body, extract::State, response::IntoResponse, Json};
+use http::{StatusCode, response::Response};
 use serde::Serialize;
 use tracing::{debug, error};
 
@@ -76,8 +76,14 @@ where
                     .into_response();
             }
 
-            // Build response using tuple syntax (can't fail)
-            (status, Json(body)).into_response()
+            // Return raw JSON response from upstream
+            // Don't wrap in Json() - the body is already JSON from Aperture
+            Response::builder()
+                .status(status)
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap()
+                .into_response()
         }
         Err(e) => {
             error!("Proxy error: {}", e);
