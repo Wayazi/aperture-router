@@ -188,6 +188,48 @@ fn default_max_streaming_size() -> usize {
     100 * 1024 * 1024 // 100MB
 }
 
+/// Endpoint style for different API providers
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EndpointStyle {
+    /// OpenAI v1 style: /v1/chat/completions, /v1/messages
+    #[default]
+    OpenaiV1,
+    /// OpenAI direct (no v1 prefix): /chat/completions
+    OpenaiDirect,
+    /// Anthropic style: /v1/messages
+    Anthropic,
+}
+
+/// Provider configuration for multi-provider support
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Provider {
+    /// Provider name (used for logging and identification)
+    pub name: String,
+
+    /// Base URL for the provider's API
+    pub base_url: String,
+
+    /// Optional API key for authentication
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Endpoint style for URL construction
+    #[serde(default)]
+    pub endpoint_style: EndpointStyle,
+
+    /// List of models this provider supports
+    pub models: Vec<String>,
+
+    /// Whether this provider is enabled
+    #[serde(default = "default_provider_enabled")]
+    pub enabled: bool,
+}
+
+fn default_provider_enabled() -> bool {
+    true
+}
+
 /// Main configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -222,6 +264,16 @@ pub struct Config {
     /// Model aliases
     #[serde(default)]
     pub model_aliases: HashMap<String, String>,
+
+    /// Enable multi-provider routing (default: false)
+    /// When false, all requests go to Aperture gateway only
+    /// When true, routes based on provider config
+    #[serde(default)]
+    pub multi_provider_enabled: bool,
+
+    /// Multi-provider configuration (only used when multi_provider_enabled = true)
+    #[serde(default)]
+    pub providers: Vec<Provider>,
 }
 
 impl Default for Config {
@@ -235,6 +287,8 @@ impl Default for Config {
             rate_limit: RateLimitConfig::default(),
             security: SecurityConfig::default(),
             model_aliases: HashMap::new(),
+            multi_provider_enabled: false,
+            providers: Vec::new(),
         }
     }
 }
@@ -483,8 +537,90 @@ impl Config {
             return Err("Production mode requires authentication but no API keys configured. Set APERTURE_ALLOW_NO_AUTH=1 to override (not recommended)".to_string());
         }
 
+        // Validate providers
+        let mut provider_names = std::collections::HashSet::new();
+        for provider in &self.providers {
+            if provider.name.is_empty() {
+                return Err("Provider name cannot be empty".to_string());
+            }
+            if !provider_names.insert(&provider.name) {
+                return Err(format!("Duplicate provider name: {}", provider.name));
+            }
+            if provider.base_url.is_empty() {
+                return Err(format!("Provider {} has empty base_url", provider.name));
+            }
+            if provider.models.is_empty() {
+                return Err(format!("Provider {} has no models configured", provider.name));
+            }
+
+            // Validate base_url scheme (only http/https allowed)
+            if !provider.base_url.starts_with("http://")
+                && !provider.base_url.starts_with("https://")
+            {
+                return Err(format!(
+                    "Provider {} has invalid base_url scheme (only http/https allowed)",
+                    provider.name
+                ));
+            }
+
+            // Validate base_url doesn't point to internal/metadata endpoints
+            if let Ok(parsed) = url::Url::parse(&provider.base_url) {
+                if let Some(host) = parsed.host_str() {
+                    if is_provider_internal_ip(host) || is_provider_metadata_endpoint(host) {
+                        return Err(format!(
+                            "Provider {} has blocked base_url (internal/metadata IP)",
+                            provider.name
+                        ));
+                    }
+                }
+            }
+
+            // Warn if API key is used with HTTP (not HTTPS)
+            if provider.api_key.is_some() && !provider.base_url.starts_with("https://") {
+                tracing::warn!(
+                    "Provider {} uses HTTP with API key - credentials transmitted in clear text",
+                    provider.name
+                );
+            }
+        }
+
         Ok(())
     }
+}
+
+/// Check if a host is an internal IP address (for provider validation)
+/// Note: Carrier-grade NAT (100.64.0.0/10) is NOT blocked here because
+/// Tailscale and other VPN mesh networks use this range legitimately.
+fn is_provider_internal_ip(host: &str) -> bool {
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| match ip {
+            std::net::IpAddr::V4(v4) => {
+                // Block standard private ranges and loopback
+                // Note: CGN (100.64.0.0/10) is allowed for Tailscale/VPN
+                v4.is_private() || v4.is_loopback() || v4.is_link_local()
+            }
+            std::net::IpAddr::V6(v6) => {
+                // Check for IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
+                if let Some(v4) = v6.to_ipv4_mapped() {
+                    return v4.is_private()
+                        || v4.is_loopback()
+                        || v4.is_link_local();
+                }
+
+                v6.is_loopback()
+                || v6.is_unique_local()
+                || matches!(v6.octets()[0], 0xfe) && (v6.octets()[1] & 0xc0) == 0x80
+                || v6.is_multicast()
+            }
+        })
+        .unwrap_or(false)
+}
+
+/// Check if a host is a metadata endpoint
+fn is_provider_metadata_endpoint(host: &str) -> bool {
+    host.contains("169.254.169.254")
+        || host.contains("metadata.google.internal")
+        || host.contains("metadata.azure.com")
 }
 
 #[cfg(test)]
@@ -549,5 +685,110 @@ mod tests {
 
         assert_eq!(config.host, deserialized.host);
         assert_eq!(config.port, deserialized.port);
+    }
+
+    #[test]
+    fn test_endpoint_style_default() {
+        assert_eq!(EndpointStyle::default(), EndpointStyle::OpenaiV1);
+    }
+
+    #[test]
+    fn test_endpoint_style_serialization() {
+        assert_eq!(
+            serde_json::to_string(&EndpointStyle::OpenaiV1).unwrap(),
+            "\"openai_v1\""
+        );
+        assert_eq!(
+            serde_json::to_string(&EndpointStyle::OpenaiDirect).unwrap(),
+            "\"openai_direct\""
+        );
+        assert_eq!(
+            serde_json::to_string(&EndpointStyle::Anthropic).unwrap(),
+            "\"anthropic\""
+        );
+    }
+
+    #[test]
+    fn test_endpoint_style_deserialization() {
+        let style: EndpointStyle = serde_json::from_str("\"openai_v1\"").unwrap();
+        assert_eq!(style, EndpointStyle::OpenaiV1);
+
+        let style: EndpointStyle = serde_json::from_str("\"openai_direct\"").unwrap();
+        assert_eq!(style, EndpointStyle::OpenaiDirect);
+
+        let style: EndpointStyle = serde_json::from_str("\"anthropic\"").unwrap();
+        assert_eq!(style, EndpointStyle::Anthropic);
+    }
+
+    #[test]
+    fn test_provider_config() {
+        let provider = Provider {
+            name: "test-provider".to_string(),
+            base_url: "https://api.example.com/api/v4".to_string(),
+            api_key: Some("test-key".to_string()),
+            endpoint_style: EndpointStyle::OpenaiDirect,
+            models: vec!["model-a".to_string(), "model-b".to_string()],
+            enabled: true,
+        };
+
+        assert_eq!(provider.name, "test-provider");
+        assert_eq!(provider.endpoint_style, EndpointStyle::OpenaiDirect);
+        assert_eq!(provider.models.len(), 2);
+    }
+
+    #[test]
+    fn test_config_with_providers() {
+        let mut config = Config::default();
+        // Disable auth requirement for test
+        config.security.require_auth_in_prod = false;
+        config.providers.push(Provider {
+            name: "test-provider".to_string(),
+            base_url: "https://api.example.com".to_string(),
+            api_key: None,
+            endpoint_style: EndpointStyle::OpenaiV1,
+            models: vec!["model-a".to_string()],
+            enabled: true,
+        });
+
+        assert_eq!(config.providers.len(), 1);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_provider_validation_duplicate_names() {
+        let mut config = Config::default();
+        config.providers.push(Provider {
+            name: "provider-1".to_string(),
+            base_url: "https://api1.example.com".to_string(),
+            api_key: None,
+            endpoint_style: EndpointStyle::OpenaiV1,
+            models: vec!["model-a".to_string()],
+            enabled: true,
+        });
+        config.providers.push(Provider {
+            name: "provider-1".to_string(), // Duplicate name
+            base_url: "https://api2.example.com".to_string(),
+            api_key: None,
+            endpoint_style: EndpointStyle::OpenaiV1,
+            models: vec!["model-b".to_string()],
+            enabled: true,
+        });
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_provider_validation_empty_models() {
+        let mut config = Config::default();
+        config.providers.push(Provider {
+            name: "bad-provider".to_string(),
+            base_url: "https://api.example.com".to_string(),
+            api_key: None,
+            endpoint_style: EndpointStyle::OpenaiV1,
+            models: vec![], // Empty models
+            enabled: true,
+        });
+
+        assert!(config.validate().is_err());
     }
 }

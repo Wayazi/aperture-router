@@ -1,12 +1,14 @@
 pub mod config;
 pub mod discovery;
 pub mod middleware;
+pub mod provider;
 pub mod proxy;
 pub mod routes;
 pub mod server;
 pub mod types;
 
 pub use config::*;
+pub use provider::ProviderRegistry;
 
 #[cfg(test)]
 mod lib_tests {

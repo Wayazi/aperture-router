@@ -13,12 +13,12 @@ pub fn validate_model_name(name: &str) -> Result<(), String> {
     }
 }
 
-/// Validates role string
+/// Validates role string for Anthropic API
+/// Valid roles: system, user, assistant
 pub fn validate_role(role: &str) -> Result<(), String> {
-    if role == "system" || role == "user" {
-        Ok(())
-    } else {
-        Err("Invalid role. Must be 'system' or 'user'".to_string())
+    match role {
+        "system" | "user" | "assistant" => Ok(()),
+        _ => Err("Invalid role. Must be 'system', 'user', or 'assistant'".to_string()),
     }
 }
 
