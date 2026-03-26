@@ -1,163 +1,184 @@
 # Installation Guide for aperture-router
 
-This guide covers various installation methods for aperture-router.
+This guide covers installation and setup methods for aperture-router.
 
 ## Table of Contents
 
 - [Requirements](#requirements)
+- [Quick Start](#quick-start)
 - [Installation Methods](#installation-methods)
-  - [Cargo Install](#cargo-install)
-  - [AUR (Arch Linux)]#aur-arch-linux)
-  - [Build from Source](#build-from-source)
-  - [Pre-built Binary](#pre-built-binary)
-- [Post-Installation](#post-installation)
+- [Configuration](#configuration)
+- [Systemd Service](#systemd-service)
 - [Verification](#verification)
+- [Troubleshooting](#troubleshooting)
 
 ## Requirements
 
 - Linux (x86_64 or aarch64)
-- Rust 1.70+ (for building from source)
 - Network access to your Tailscale Aperture gateway
+
+## Quick Start
+
+The fastest way to get running:
+
+```bash
+# Install
+yay -S aperture-router  # Arch Linux
+# or
+cargo install aperture-router  # Any Linux
+
+# Set your Aperture URL and run
+export APERTURE_BASE_URL=http://your-aperture-gateway:8080
+aperture-router
+```
+
+That's it! No config file needed.
 
 ## Installation Methods
 
-### Cargo Install
+### AUR (Arch Linux) - Recommended
 
-The easiest way to install aperture-router is using Cargo:
+```bash
+yay -S aperture-router
+# or
+paru -S aperture-router
+```
+
+This includes:
+- Binary at `/usr/bin/aperture-router`
+- Systemd service files
+- Sysusers.d for automatic user creation
+- Sysconfig template
+
+### Cargo
 
 ```bash
 cargo install aperture-router
 ```
 
-This will:
-1. Download and compile aperture-router
-2. Install the binary to `~/.cargo/bin/aperture-router`
+Binary installed to `~/.cargo/bin/aperture-router`. Make sure `~/.cargo/bin` is in your PATH.
 
-Make sure `~/.cargo/bin` is in your PATH:
+### From Source
 
 ```bash
-export PATH="$HOME/.cargo/bin:$PATH"
-```
-
-### AUR (Arch Linux)
-
-If you're on Arch Linux, install from the AUR:
-
-```bash
-# Using yay
-yay -S aperture-router
-
-# Using paru
-paru -S aperture-router
-
-# Manual installation
-git clone https://aur.archlinux.org/aperture-router.git
-cd aperture-router
-makepkg -si
-```
-
-### Build from Source
-
-To build from source:
-
-```bash
-# Clone the repository
 git clone https://github.com/Wayazi/aperture-router
 cd aperture-router
-
-# Build in release mode
 cargo build --release
-
-# Install to system directory
 sudo cp target/release/aperture-router /usr/local/bin/
 ```
 
 ### Pre-built Binary
 
-Download a pre-built binary from the [Releases](https://github.com/Wayazi/aperture-router/releases) page:
+Download from [Releases](https://github.com/Wayazi/aperture-router/releases):
 
 ```bash
-# Download for x86_64
-wget https://github.com/Wayazi/aperture-router/releases/download/v0.1.0/aperture-router-x86_64-linux.tar.gz
-
-# Extract
+wget https://github.com/Wayazi/aperture-router/releases/download/v0.2.0/aperture-router-x86_64-linux.tar.gz
 tar xzf aperture-router-x86_64-linux.tar.gz
-
-# Install
 sudo cp aperture-router /usr/local/bin/
-
-# Verify checksum
-sha256sum -c aperture-router-x86_64-linux.sha256
 ```
 
-## Post-Installation
+## Configuration
 
-### 1. Create Configuration Directory
+### Method 1: Environment Variables (No Config File)
 
 ```bash
-sudo mkdir -p /etc/aperture-router
+# Required
+export APERTURE_BASE_URL=http://your-aperture-gateway:8080
+
+# Optional - API key for authentication
+export APERTURE_API_KEY=your-api-key-at-least-32-characters
+
+# Optional - Allow running without auth (development only)
+export APERTURE_ALLOW_NO_AUTH=1
+
+# Start
+aperture-router
 ```
 
-### 2. Copy Example Configuration
+### Method 2: Generate Config
 
 ```bash
-sudo cp config.example.toml /etc/aperture-router/config.toml
+# Auto-generate config with API key
+aperture-router config generate \
+  --url http://your-aperture-gateway:8080 \
+  --generate-key
+
+# Or specify output path
+aperture-router config generate \
+  --url http://your-aperture-gateway:8080 \
+  --output /etc/aperture-router/config.toml
 ```
 
-Or download from GitHub:
+### Method 3: Interactive Wizard
 
 ```bash
-sudo wget -O /etc/aperture-router/config.toml \
-  https://raw.githubusercontent.com/Wayazi/aperture-router/main/config.example.toml
+aperture-router config wizard
 ```
 
-### 3. Edit Configuration
+The wizard will:
+1. Connect to your Aperture gateway
+2. Discover available models
+3. Let you select providers
+4. Generate config file
+5. Optionally create OpenCode config
 
-```bash
-sudo editor /etc/aperture-router/config.toml
-```
+### Method 4: Manual Config File
 
-Minimum required configuration:
+Create `config.toml`:
 
 ```toml
+host = "127.0.0.1"
+port = 8765
+
 [aperture]
-base_url = "http://100.100.100.100"  # Your Aperture gateway IP
+base_url = "http://your-aperture-gateway:8080"
+
+[security]
+api_keys = ["your-api-key-at-least-32-characters"]
 ```
 
-### 4. Create User (for systemd service)
+## Systemd Service (Arch Linux)
+
+The AUR package includes everything for systemd:
 
 ```bash
-sudo useradd -r -s /bin/false -d /var/lib/aperture-router aperture-router
-```
+# Set your Aperture URL
+echo "APERTURE_BASE_URL=http://your-aperture-gateway:8080" | sudo tee /etc/sysconfig/aperture-router
 
-### 5. Create State Directory
-
-```bash
-sudo mkdir -p /var/lib/aperture-router
-sudo chown -R aperture-router:aperture-router /var/lib/aperture-router
-```
-
-## Systemd Service (Optional)
-
-For production use, install the systemd service:
-
-```bash
-# Install service files
-sudo cp contrib/systemd/aperture-router.service /etc/systemd/system/
-sudo cp contrib/systemd/aperture-router.sysconfig /etc/sysconfig/aperture-router
-sudo cp contrib/systemd/aperture-router.tmpfiles /etc/tmpfiles.d/aperture-router.conf
-
-# Reload systemd
-sudo systemctl daemon-reload
+# Optional: Add API key
+echo "APERTURE_API_KEY=your-api-key-here" | sudo tee -a /etc/sysconfig/aperture-router
 
 # Enable and start
 sudo systemctl enable --now aperture-router
 
 # Check status
 sudo systemctl status aperture-router
+
+# View logs
+journalctl -u aperture-router -f
 ```
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for more deployment details.
+### Manual Systemd Setup
+
+If not using AUR:
+
+```bash
+# Create user
+sudo useradd -r -s /bin/false -d /var/lib/aperture-router aperture-router
+
+# Install service files
+sudo cp contrib/systemd/aperture-router.service /etc/systemd/system/
+sudo cp contrib/systemd/aperture-router.sysusers /usr/lib/sysusers.d/aperture-router.conf
+sudo cp contrib/systemd/aperture-router.tmpfiles /usr/lib/tmpfiles.d/aperture-router.conf
+
+# Create directories
+sudo mkdir -p /etc/aperture-router /var/lib/aperture-router
+sudo chown aperture-router:aperture-router /var/lib/aperture-router
+
+# Reload and start
+sudo systemctl daemon-reload
+sudo systemctl enable --now aperture-router
+```
 
 ## Verification
 
@@ -165,88 +186,110 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for more deployment details.
 
 ```bash
 aperture-router --version
-```
-
-Expected output:
-```
-aperture-router 0.1.0
+# aperture-router 0.2.0
 ```
 
 ### Test Health Endpoint
 
 ```bash
-curl http://localhost:8080/health
+curl http://127.0.0.1:8765/health
+# {"status":"ok"}
 ```
 
-Expected output:
-```json
-{"status":"healthy"}
-```
-
-### List Models
+### List Available Models
 
 ```bash
-curl http://localhost:8080/v1/models
+curl http://127.0.0.1:8765/v1/models
+```
+
+### Test with API Key
+
+```bash
+curl -H "Authorization: Bearer your-api-key" \
+  http://127.0.0.1:8765/v1/models
 ```
 
 ## Troubleshooting
 
-### Binary Not Found
+### "No config file found and APERTURE_BASE_URL not set"
 
-If `aperture-router` is not found, check your PATH:
-
+Set the environment variable:
 ```bash
-echo $PATH
-which aperture-router
+export APERTURE_BASE_URL=http://your-aperture-gateway:8080
 ```
 
-If using Cargo install, add to your `~/.bashrc` or `~/.zshrc`:
-
+Or create a config file:
 ```bash
-export PATH="$HOME/.cargo/bin:$PATH"
+aperture-router config generate --url http://your-aperture-gateway:8080
 ```
 
-### Permission Denied
+### "Permission denied" reading config
 
-Make the binary executable:
-
+For systemd service, check file permissions:
 ```bash
-chmod +x aperture-router
+ls -la /etc/aperture-router/config.toml
+# Should be: -rw-r----- (640) or -rw------- (600)
+
+# Fix permissions
+sudo chmod 640 /etc/aperture-router/config.toml
+sudo chown root:aperture-router /etc/aperture-router/config.toml
 ```
 
-### Port Already in Use
-
-Check what's using port 8080:
-
+Add your user to the group:
 ```bash
-sudo ss -tlnp | grep :8080
+sudo usermod -aG aperture-router $USER
+# Log out and back in for changes to take effect
 ```
 
-Change the port in `/etc/aperture-router/config.toml`:
+### "Production mode requires authentication but no API keys configured"
 
-```toml
-[server]
-port = 8081
+Add an API key:
+
+**Option 1:** Environment variable
+```bash
+export APERTURE_API_KEY=$(aperture-router config generate --url http://gateway --generate-key 2>&1 | grep "Generated" | awk '{print $4}')
 ```
 
-### Connection Refused
+**Option 2:** Config file
+```bash
+aperture-router config generate --url http://gateway --generate-key
+```
 
-1. Verify Aperture gateway is accessible:
+**Option 3:** Disable auth (development only)
+```bash
+export APERTURE_ALLOW_NO_AUTH=1
+```
+
+### "Port already in use"
+
+Change port in config or environment:
+```bash
+export APERTURE_PORT=8766
+# or in config.toml: port = 8766
+```
+
+### Connection to Aperture fails
+
+1. Verify Aperture is accessible:
    ```bash
-   curl http://100.100.100.100/health
+   curl http://your-aperture-gateway:8080/v1/models
    ```
 
-2. Check aperture-router logs:
-   ```bash
-   journalctl -u aperture-router -f
-   ```
+2. Check firewall allows outbound connections
 
-3. Verify configuration:
+3. Verify Tailscale is running:
    ```bash
-   aperture-router --config /etc/aperture-router/config.toml --check
+   tailscale status
    ```
 
 ## Uninstallation
+
+### AUR
+
+```bash
+yay -R aperture-router
+# Config preserved in /etc/sysconfig/aperture-router
+```
 
 ### Cargo
 
@@ -254,33 +297,18 @@ port = 8081
 cargo uninstall aperture-router
 ```
 
-### AUR
+### Manual
 
 ```bash
-yay -R aperture-router
-```
-
-### Manual Installation
-
-```bash
+sudo systemctl stop aperture-router
+sudo systemctl disable aperture-router
 sudo rm /usr/local/bin/aperture-router
 sudo rm -rf /etc/aperture-router
 sudo userdel aperture-router
 ```
 
-### Systemd Service
-
-```bash
-sudo systemctl stop aperture-router
-sudo systemctl disable aperture-router
-sudo rm /etc/systemd/system/aperture-router.service
-sudo rm /etc/sysconfig/aperture-router
-sudo rm /etc/tmpfiles.d/aperture-router.conf
-sudo systemctl daemon-reload
-```
-
 ## Next Steps
 
-- See [DEPLOYMENT.md](DEPLOYMENT.md) for production deployment
-- See [README.md](README.md) for usage examples
-- See [CHANGELOG.md](CHANGELOG.md) for version history
+- [README.md](README.md) - Usage examples and CLI commands
+- [DEPLOYMENT.md](DEPLOYMENT.md) - Production deployment guide
+- [CHANGELOG.md](CHANGELOG.md) - Version history
