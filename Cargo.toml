@@ -1,6 +1,6 @@
 [package]
 name = "aperture-router"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Universal AI router for Tailscale Aperture"
 license = "MIT"
@@ -34,6 +34,7 @@ url = "2.5"
 
 # Async utilities
 tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
 
 # Logging
@@ -51,6 +52,15 @@ thiserror = "2"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# Interactive prompts for config wizard
+inquire = "0.7"
+
+# Secure memory clearing for API keys
+zeroize = { version = "1.8", features = ["derive"] }
+
+# Config directory paths
+dirs = "5"
+
 # UUID for request tracking
 uuid = { version = "1", features = ["v4"] }
 
@@ -60,3 +70,4 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 wiremock = "0.6"
 mockall = "0.13"
+tempfile = "3"

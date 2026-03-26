@@ -6,6 +6,7 @@ use axum::{
     Router,
 };
 use std::sync::{Arc, Mutex};
+use tokio_util::sync::CancellationToken;
 use tower_http::{
     compression::CompressionLayer, cors::CorsLayer, limit::RequestBodyLimitLayer,
     set_header::SetResponseHeaderLayer, trace::TraceLayer,
@@ -18,8 +19,6 @@ use crate::{
 };
 
 /// Application state shared across all routes
-///
-/// Provides typed access to shared resources instead of fragile tuple indexing.
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
@@ -28,10 +27,11 @@ pub struct AppState {
     pub discovery: Arc<ModelDiscovery>,
     pub provider_registry: Arc<ProviderRegistry>,
     pub cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub refresh_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub shutdown_token: CancellationToken,
 }
 
 impl AppState {
-    /// Create a new AppState instance
     pub fn new(
         config: Arc<Config>,
         auth_state: AuthState,
@@ -39,6 +39,8 @@ impl AppState {
         discovery: Arc<ModelDiscovery>,
         provider_registry: Arc<ProviderRegistry>,
         cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+        refresh_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+        shutdown_token: CancellationToken,
     ) -> Self {
         Self {
             config,
@@ -47,11 +49,12 @@ impl AppState {
             discovery,
             provider_registry,
             cleanup_handle,
+            refresh_handle,
+            shutdown_token,
         }
     }
 }
 
-/// Helper function to create CORS layer with consistent configuration
 fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
     let headers = [
         axum::http::header::CONTENT_TYPE,
@@ -67,7 +70,6 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
     ];
 
     if config.allowed_origins.is_empty() {
-        // Fallback to localhost defaults if no origins configured
         let origins = [
             "http://localhost:3000"
                 .parse()
@@ -83,7 +85,6 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
             .allow_headers(headers)
             .allow_credentials(true)
     } else {
-        // Use configured origins - convert Strings to HeaderValues
         let origins: Result<Vec<axum::http::HeaderValue>, _> = config
             .allowed_origins
             .iter()
@@ -98,7 +99,6 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
                 .allow_credentials(true),
             Err(e) => {
                 tracing::warn!("Invalid CORS origin configuration: {}, using defaults", e);
-                // Fallback to defaults on parse error
                 let fallback_origins = [
                     "http://localhost:3000"
                         .parse()
@@ -118,11 +118,16 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
     }
 }
 
-pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
+/// Create the router with all routes and middleware
+/// Returns (Router, CancellationToken) for graceful shutdown
+pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> (Router, CancellationToken) {
     info!("Creating router with authentication and CORS layers");
 
-    // Create provider registry from config
-    let provider_registry = Arc::new(ProviderRegistry::new(config.providers.clone()));
+    // Create provider registry with Aperture URL for auto-discovery
+    let provider_registry = Arc::new(ProviderRegistry::with_aperture_url(
+        config.providers.clone(),
+        config.aperture.base_url.clone(),
+    ));
 
     // Create proxy client
     let proxy_client = ProxyClient::new(
@@ -135,18 +140,29 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
     // Create authentication state
     let auth_state = AuthState::new(&config.security, &config.cors);
 
-    // Start cleanup task for rate limiting and store the handle
+    // Create shutdown token for graceful termination
+    let shutdown_token = CancellationToken::new();
+
+    // Start cleanup task for rate limiting
     let cleanup_handle = Arc::new(Mutex::new(Some(auth_state.start_cleanup_task())));
 
-    // Setup CORS with configurable origins
+    // Start model refresh task with registry sync and shutdown support
+    let refresh_handle = Arc::new(Mutex::new(Some(
+        Arc::clone(&discovery).start_refresh_task(
+            Some(Arc::clone(&provider_registry)),
+            shutdown_token.clone(),
+        )
+    )));
+
+    // Setup CORS
     let cors = create_cors_layer(&config.cors);
 
-    // Create shared config and auth state for middleware
+    // Create shared config and auth state
     let shared_config = Arc::new(config.clone());
     let shared_auth_state = Arc::new(auth_state.clone());
     let shared_auth_state_for_admin = Arc::new(auth_state.clone());
 
-    // Create AppState instances
+    // Create AppState
     let app_state = AppState::new(
         shared_config.clone(),
         auth_state.clone(),
@@ -154,6 +170,8 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
         discovery.clone(),
         provider_registry.clone(),
         cleanup_handle.clone(),
+        refresh_handle.clone(),
+        shutdown_token.clone(),
     );
 
     let admin_state = AppState::new(
@@ -163,13 +181,11 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
         discovery.clone(),
         provider_registry.clone(),
         cleanup_handle.clone(),
+        refresh_handle.clone(),
+        shutdown_token.clone(),
     );
 
-    // Build router with middleware
-    // NOTE: Auth middleware is applied via route_layer to protect all routes below it
-    // All routes except /health require authentication
-
-    // Admin routes - protected by admin-specific auth (requires admin API key)
+    // Admin routes
     let admin_routes = Router::new()
         .route(
             "/admin/refresh-models",
@@ -182,7 +198,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
         ))
         .with_state(admin_state);
 
-    // Regular API routes - protected by regular auth
+    // Regular API routes
     let protected_routes = Router::new()
         .route("/v1/models", get(crate::routes::models::models))
         .route(
@@ -203,7 +219,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
         ))
         .with_state(app_state);
 
-    Router::new()
+    let router = Router::new()
         .route("/health", get(crate::routes::health::health))
         .merge(admin_routes)
         .merge(protected_routes)
@@ -214,19 +230,19 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
             axum::http::HeaderValue::from_static("default-src 'self'"),
         ))
         .layer(SetResponseHeaderLayer::overriding(
-            axum::http::header::HeaderName::from_static("x-frame-options"),
+            axum::http::HeaderName::from_static("x-frame-options"),
             axum::http::HeaderValue::from_static("DENY"),
         ))
         .layer(SetResponseHeaderLayer::overriding(
-            axum::http::header::HeaderName::from_static("x-content-type-options"),
+            axum::http::HeaderName::from_static("x-content-type-options"),
             axum::http::HeaderValue::from_static("nosniff"),
         ))
         .layer(SetResponseHeaderLayer::overriding(
-            axum::http::header::HeaderName::from_static("x-xss-protection"),
+            axum::http::HeaderName::from_static("x-xss-protection"),
             axum::http::HeaderValue::from_static("1; mode=block"),
         ))
         .layer(SetResponseHeaderLayer::overriding(
-            axum::http::header::HeaderName::from_static("strict-transport-security"),
+            axum::http::HeaderName::from_static("strict-transport-security"),
             axum::http::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
         ))
         .layer(RequestBodyLimitLayer::new(
@@ -234,5 +250,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> Router {
                 .try_into()
                 .expect("Body size limit exceeds usize max"),
         ))
-        .layer(cors)
+        .layer(cors);
+
+    (router, shutdown_token)
 }

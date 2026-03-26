@@ -108,12 +108,14 @@ where
 }
 
 /// Generic proxy handler for JSON requests with multi-provider support
+/// Now accepts Option<Provider> directly since lookup is async
 pub async fn proxy_handler_multi<T>(
     proxy_client: ProxyClient,
-    provider_registry: ProviderRegistry,
+    provider: Option<Provider>,
     request: T,
     default_endpoint: &str,
     multi_provider_enabled: bool,
+    _registry: &ProviderRegistry, // Keep for potential future use
 ) -> Response<Body>
 where
     T: HasModel + Serialize,
@@ -127,9 +129,6 @@ where
         return proxy_to_default_gateway(proxy_client, request, default_endpoint).await;
     }
 
-    // Check if we have a provider for this model
-    let provider = provider_registry.get_provider_for_model(model);
-
     match provider {
         Some(provider) => {
             info!(
@@ -137,10 +136,10 @@ where
                 model, provider.name, provider.base_url
             );
 
-            let url = build_provider_url(provider, default_endpoint);
+            let url = build_provider_url(&provider, default_endpoint);
             debug!("Built URL: {}", url);
 
-            let api_key = get_provider_api_key(provider, proxy_client.api_key());
+            let api_key = get_provider_api_key(&provider, proxy_client.api_key());
             let body = match serialize_request(&request) {
                 Ok(b) => b,
                 Err(r) => return r,

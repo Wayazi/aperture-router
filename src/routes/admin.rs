@@ -13,13 +13,15 @@ struct RefreshResponse {
     success: bool,
     message: String,
     models_count: usize,
+    providers_count: usize,
+    providers: Vec<String>,
     models: Vec<ModelInfo>,
 }
 
 #[derive(Debug, Serialize)]
 struct ModelInfo {
     id: String,
-    owned_by: String,
+    provider: Option<String>,
 }
 
 /// POST /admin/refresh-models
@@ -45,28 +47,39 @@ pub async fn refresh_models(State(state): State<AppState>) -> impl IntoResponse 
     let discovery = &state.discovery;
 
     match discovery.fetch_models().await {
-        Ok(models) => {
+        Ok(snapshot) => {
             info!(
                 request_id = %request_id,
                 operation = "admin_refresh_models",
                 status = "success",
-                models_count = models.len(),
-                model_ids = ?models.iter().map(|m| &m.id).collect::<Vec<_>>(),
+                models_count = snapshot.models.len(),
+                providers_count = snapshot.providers.len(),
                 "Admin operation: Model refresh completed successfully"
             );
 
-            let model_info: Vec<ModelInfo> = models
+            // Update provider registry with discovered models
+            state.provider_registry
+                .update_from_discovery(&snapshot.models_by_provider, &state.config.aperture.base_url)
+                .await;
+
+            let model_info: Vec<ModelInfo> = snapshot.models
                 .iter()
                 .map(|m| ModelInfo {
                     id: m.id.clone(),
-                    owned_by: m.owned_by.clone(),
+                    provider: m.provider_id.clone(),
                 })
                 .collect();
 
             let response = Json(RefreshResponse {
                 success: true,
-                message: format!("Successfully refreshed {} models", models.len()),
-                models_count: models.len(),
+                message: format!(
+                    "Successfully refreshed {} models from {} providers",
+                    snapshot.models.len(),
+                    snapshot.providers.len()
+                ),
+                models_count: snapshot.models.len(),
+                providers_count: snapshot.providers.len(),
+                providers: snapshot.providers,
                 models: model_info,
             });
             (StatusCode::OK, response).into_response()
@@ -79,11 +92,12 @@ pub async fn refresh_models(State(state): State<AppState>) -> impl IntoResponse 
                 error = ?e,
                 "Admin operation: Model refresh failed"
             );
-            // Return generic error message to client (don't leak internal details)
             let error_response = Json(RefreshResponse {
                 success: false,
                 message: "Failed to refresh models from Aperture gateway".to_string(),
                 models_count: 0,
+                providers_count: 0,
+                providers: Vec::new(),
                 models: Vec::new(),
             });
             (StatusCode::INTERNAL_SERVER_ERROR, error_response).into_response()
@@ -101,8 +115,16 @@ pub async fn refresh_models(State(state): State<AppState>) -> impl IntoResponse 
 #[derive(Debug, Serialize)]
 struct StatsResponse {
     models_count: usize,
-    models: Vec<ModelInfo>,
+    providers_count: usize,
+    providers: Vec<ProviderStats>,
     version: String,
+    refresh_interval_secs: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct ProviderStats {
+    name: String,
+    models_count: usize,
 }
 
 #[must_use]
@@ -116,14 +138,13 @@ pub async fn get_stats(State(state): State<AppState>) -> impl IntoResponse {
         "Admin operation: Stats requested"
     );
 
-    let discovery = &state.discovery;
-    let models = discovery.get_models().await;
+    let snapshot = state.discovery.get_snapshot().await;
 
-    let model_info: Vec<ModelInfo> = models
+    let provider_stats: Vec<ProviderStats> = snapshot.models_by_provider
         .iter()
-        .map(|m| ModelInfo {
-            id: m.id.clone(),
-            owned_by: m.owned_by.clone(),
+        .map(|(name, models)| ProviderStats {
+            name: name.clone(),
+            models_count: models.len(),
         })
         .collect();
 
@@ -131,13 +152,15 @@ pub async fn get_stats(State(state): State<AppState>) -> impl IntoResponse {
         request_id = %request_id,
         operation = "admin_get_stats",
         status = "success",
-        models_count = models.len(),
+        models_count = snapshot.models.len(),
         "Admin operation: Stats retrieved successfully"
     );
 
     Json(StatsResponse {
-        models_count: models.len(),
-        models: model_info,
+        models_count: snapshot.models.len(),
+        providers_count: snapshot.providers.len(),
+        providers: provider_stats,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        refresh_interval_secs: state.config.aperture.model_refresh_interval_secs,
     })
 }

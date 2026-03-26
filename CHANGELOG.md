@@ -7,8 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-26
+
 ### Added
-- Initial release preparation
+- **Dynamic Model Discovery** - Models and providers are now auto-discovered from Aperture at runtime
+- **Auto-refresh Background Task** - Model list refreshes automatically with configurable interval
+- **Interactive CLI Wizard** - Run `aperture-router config wizard` for guided configuration
+- **OpenCode Export** - Export config to OpenCode format with `aperture-router config export --opencode`
+- **Admin API Endpoints** - `/admin/stats` and `/admin/refresh-models` for monitoring and control
+- **Graceful Shutdown** - Proper CancellationToken-based shutdown for all background tasks
+- **CancellationToken Architecture** - Clean task termination on SIGINT/SIGTERM
+- **5 New Config Save Tests** - Verifying atomic writes and secure file permissions
+
+### Changed
+- **Removed Hardcoded ProviderPlan** - No more "coding"/"credit" plan naming, fully dynamic
+- **API Keys Use Zeroizing** - Keys are securely wiped from memory on drop
+- **Timing-Safe Key Validation** - All keys compared to prevent timing attacks
+- **Config File Permissions** - Files created with 0o600 from the start (no race condition)
+- **Registry Sync on Refresh** - ProviderRegistry stays in sync with ModelDiscovery
+- **Immediate Initial Refresh** - Models available immediately on startup
+
+### Security
+- **Fixed cfg!(debug_assertions) Logic** - Production auth check now triggers correctly
+- **Secure Temp File Creation** - Uses OpenOptions with mode 0o600 from creation
+- **Zeroizing<String> for Secrets** - API keys wiped from memory securely
+- **Timing-Attack Resistant Auth** - Compares all keys without short-circuit
+- **SSRF Protection Enhanced** - Metadata endpoint blocking for AWS/GCP/Azure
+
+### Tests
+- **151 Total Tests** - All passing (up from 114)
+- **Config Save Permission Tests** - Verify 0o600 permissions on Unix
+- **Atomic Write Tests** - Verify no temp file left after save
 
 ## [0.1.0] - 2026-03-23
 
@@ -120,5 +149,6 @@ aperture-router --debug
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-[Unreleased]: https://github.com/Wayazi/aperture-router/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Wayazi/aperture-router/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Wayazi/aperture-router/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Wayazi/aperture-router/releases/tag/v0.1.0
