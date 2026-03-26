@@ -11,7 +11,7 @@ makedepends=('cargo')
 install="$pkgname.install"
 backup=('etc/sysconfig/aperture-router')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('385c40791c000505e0a8419e1eaa890a176f0a02621fa816c4c4210715da3b99')
 
 prepare() {
   cd "$pkgname-$pkgver"
