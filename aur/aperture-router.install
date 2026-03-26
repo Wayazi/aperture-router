@@ -1,24 +1,48 @@
 post_install() {
   cat <<EOF
 
-==> aperture-router installation complete!
+==> aperture-router v0.2.0 installation complete!
+
+NEW IN v0.2.0:
+  • Dynamic model discovery with auto-refresh
+  • Secure API key storage with memory zeroization
+  • Graceful shutdown support
+  • CLI configuration wizard
 
 To get started:
 
 1. Create a configuration file:
    sudo cp /usr/share/doc/aperture-router/config.example.toml /etc/aperture-router/config.toml
 
-2. Edit the configuration to set your Aperture gateway URL:
+   OR use the interactive wizard:
+   sudo aperture-router --wizard
+
+2. IMPORTANT: Configure API keys for authentication!
+   Edit the config file and add API keys:
    sudo editor /etc/aperture-router/config.toml
 
-3. Start the service:
+   Example:
+     [security]
+     api_keys = ["your-secure-api-key-here-at-least-32-chars"]
+     admin_api_keys = ["your-admin-key-here-at-least-32-chars"]
+
+3. Set your Aperture gateway URL (or use the environment variable):
+   sudo editor /etc/sysconfig/aperture-router
+   # Set APERTURE_BASE_URL=http://your-aperture-gateway:8080
+
+4. Start the service:
    sudo systemctl enable --now aperture-router
 
-4. Check the service status:
+5. Check the service status:
    sudo systemctl status aperture-router
 
-5. View logs:
+6. View logs:
    journalctl -u aperture-router -f
+
+SECURITY NOTES:
+  • API keys must be at least 32 characters
+  • Config files are created with 0o600 permissions
+  • Use admin_api_keys for /admin/* endpoints
 
 For more information, visit: https://github.com/Wayazi/aperture-router
 
@@ -28,10 +52,18 @@ EOF
 post_upgrade() {
   cat <<EOF
 
-==> aperture-router has been upgraded!
+==> aperture-router has been upgraded to v0.2.0!
+
+NEW FEATURES:
+  • Dynamic model discovery with auto-refresh
+  • Secure API key storage (memory zeroization)
+  • Graceful shutdown support
 
 Restart the service to apply changes:
   sudo systemctl restart aperture-router
+
+Check logs for any issues:
+  journalctl -u aperture-router -f
 
 EOF
 }
@@ -41,6 +73,7 @@ pre_remove() {
 
 ==> Stopping aperture-router service...
   sudo systemctl stop aperture-router
+  sudo systemctl disable aperture-router
 
 EOF
 }
