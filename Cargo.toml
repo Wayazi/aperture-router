@@ -10,19 +10,23 @@ keywords = ["proxy", "ai", "aperture", "tailscale", "anthropic", "openai"]
 categories = ["web-programming::http-server", "api-bindings"]
 readme = "README.md"
 
+[features]
+default = []
+wizard = ["inquire"]
+
 [dependencies]
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+# Async runtime - minimal features for memory efficiency
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "sync", "time", "macros"] }
 
 # Web framework
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "decompression-gzip", "limit", "set-header"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "limit", "set-header"], default-features = false }
 http = "1.0"
 subtle = "2.5"
 
-# HTTP client
-reqwest = { version = "0.12", features = ["json", "stream"] }
+# HTTP client - single TLS backend (rustls), no default features
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -52,8 +56,8 @@ thiserror = "2"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Interactive prompts for config wizard
-inquire = "0.7"
+# Interactive prompts for config wizard (optional)
+inquire = { version = "0.7", optional = true }
 
 # Secure memory clearing for API keys
 zeroize = { version = "1.8", features = ["derive"] }
@@ -61,8 +65,17 @@ zeroize = { version = "1.8", features = ["derive"] }
 # Config directory paths
 dirs = "5"
 
-# UUID for request tracking
-uuid = { version = "1", features = ["v4"] }
+# UUID for request tracking - no wasm
+uuid = { version = "1", features = ["v4"], default-features = false }
+
+# Lazy static initialization for shared client
+once_cell = "1.19"
+
+[profile.release]
+lto = true
+strip = true
+opt-level = "z"
+codegen-units = 1
 
 [dev-dependencies]
 tokio-test = "0.4"

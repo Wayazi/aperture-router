@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 aperture-router contributors
 
-use reqwest::{Client, Url};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::config::ApertureConfig;
+use crate::http_client::SHARED_CLIENT;
 
 /// Model with provider metadata from Aperture
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -70,7 +71,6 @@ pub struct DiscoverySnapshot {
 /// Dynamic model discovery with auto-refresh
 /// No hardcoded plans - everything comes from Aperture
 pub struct ModelDiscovery {
-    client: Client,
     aperture_config: ApertureConfig,
     /// Current models indexed by ID
     models: Arc<RwLock<HashMap<String, Model>>>,
@@ -86,16 +86,9 @@ pub struct ModelDiscovery {
 
 impl ModelDiscovery {
     pub fn new(aperture_config: ApertureConfig) -> anyhow::Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create HTTP client for model discovery: {}", e))?;
-
         let refresh_interval_secs = aperture_config.model_refresh_interval_secs;
 
         Ok(Self {
-            client,
             aperture_config,
             models: Arc::new(RwLock::new(HashMap::new())),
             models_by_provider: Arc::new(RwLock::new(HashMap::new())),
@@ -123,7 +116,8 @@ impl ModelDiscovery {
 
         debug!("Fetching models from {}", url);
 
-        let response = self.client.get(url.clone()).send().await?;
+        // Use shared HTTP client for memory efficiency
+        let response = SHARED_CLIENT.get(url.clone()).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -141,12 +135,15 @@ impl ModelDiscovery {
 
         let models_response: ModelsResponse = response.json().await?;
 
+        // Get model count for capacity hints (reduces HashMap reallocations)
+        let model_count = models_response.data.len();
+
         // Process models and extract provider metadata from Aperture
-        let mut new_models: HashMap<String, Model> = HashMap::new();
+        // Pre-allocate with capacity to avoid resize churn
+        let mut new_models: HashMap<String, Model> = HashMap::with_capacity(model_count);
         let mut new_models_by_provider: HashMap<String, Vec<String>> = HashMap::new();
         let mut new_providers: HashSet<String> = HashSet::new();
 
-        let model_count = models_response.data.len();
         for api_model in models_response.data {
             // Extract provider ID from Aperture metadata (no hardcoded plans!)
             let provider_id = api_model

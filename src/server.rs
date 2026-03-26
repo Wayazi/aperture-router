@@ -8,7 +8,7 @@ use axum::{
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tower_http::{
-    compression::CompressionLayer, cors::CorsLayer, limit::RequestBodyLimitLayer,
+    cors::CorsLayer, limit::RequestBodyLimitLayer,
     set_header::SetResponseHeaderLayer, trace::TraceLayer,
 };
 use tracing::info;
@@ -157,13 +157,12 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> (Router,
     // Setup CORS
     let cors = create_cors_layer(&config.cors);
 
-    // Create shared config and auth state
+    // Create shared config and auth state (single instance each)
     let shared_config = Arc::new(config.clone());
     let shared_auth_state = Arc::new(auth_state.clone());
-    let shared_auth_state_for_admin = Arc::new(auth_state.clone());
 
-    // Create AppState
-    let app_state = AppState::new(
+    // Create a single AppState wrapped in Arc (reduces clones)
+    let app_state = Arc::new(AppState::new(
         shared_config.clone(),
         auth_state.clone(),
         proxy_client.clone(),
@@ -172,20 +171,9 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> (Router,
         cleanup_handle.clone(),
         refresh_handle.clone(),
         shutdown_token.clone(),
-    );
+    ));
 
-    let admin_state = AppState::new(
-        shared_config.clone(),
-        auth_state.clone(),
-        proxy_client.clone(),
-        discovery.clone(),
-        provider_registry.clone(),
-        cleanup_handle.clone(),
-        refresh_handle.clone(),
-        shutdown_token.clone(),
-    );
-
-    // Admin routes
+    // Admin routes - uses same state via Arc clone (cheap reference increment)
     let admin_routes = Router::new()
         .route(
             "/admin/refresh-models",
@@ -193,12 +181,12 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> (Router,
         )
         .route("/admin/stats", get(crate::routes::admin::get_stats))
         .route_layer(axum::middleware::from_fn_with_state(
-            (Arc::clone(&shared_config), shared_auth_state_for_admin),
+            (Arc::clone(&shared_config), Arc::clone(&shared_auth_state)),
             crate::middleware::admin_auth_middleware,
         ))
-        .with_state(admin_state);
+        .with_state((*app_state).clone());
 
-    // Regular API routes
+    // Regular API routes - uses same state via Arc clone
     let protected_routes = Router::new()
         .route("/v1/models", get(crate::routes::models::models))
         .route(
@@ -214,17 +202,16 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> (Router,
             post(crate::routes::messages::anthropic_messages),
         )
         .route_layer(axum::middleware::from_fn_with_state(
-            (Arc::clone(&shared_config), shared_auth_state),
+            (Arc::clone(&shared_config), Arc::clone(&shared_auth_state)),
             crate::middleware::auth_middleware,
         ))
-        .with_state(app_state);
+        .with_state((*app_state).clone());
 
     let router = Router::new()
         .route("/health", get(crate::routes::health::health))
         .merge(admin_routes)
         .merge(protected_routes)
         .layer(TraceLayer::new_for_http())
-        .layer(CompressionLayer::new())
         .layer(SetResponseHeaderLayer::overriding(
             axum::http::header::CONTENT_SECURITY_POLICY,
             axum::http::HeaderValue::from_static("default-src 'self'"),

@@ -12,4 +12,6 @@ pub mod commands;
 pub mod model_fetcher;
 pub mod opencode_export;
 pub mod security;
+
+#[cfg(feature = "wizard")]
 pub mod wizard;

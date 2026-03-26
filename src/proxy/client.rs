@@ -3,22 +3,20 @@
 
 use futures::{stream, Stream, StreamExt};
 use reqwest::Client;
-use std::collections::HashSet;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 use tracing::{debug, error, info};
 use url::Url;
 
 use crate::config::{ApertureConfig, HttpConfig};
+use crate::http_client::{create_client_with_timeouts, is_allowed_endpoint};
 
 /// HTTP client for proxying requests to Aperture
 #[derive(Clone)]
 pub struct ProxyClient {
     client: Client,
     aperture_config: ApertureConfig,
-    allowed_endpoints: HashSet<String>,
     max_streaming_size_bytes: usize,
 }
 
@@ -28,9 +26,6 @@ impl ProxyClient {
         http_config: HttpConfig,
         max_streaming_size_bytes: usize,
     ) -> anyhow::Result<Self> {
-        let timeout = Duration::from_secs(http_config.request_timeout_secs);
-        let connect_timeout = Duration::from_secs(http_config.connect_timeout_secs);
-
         // Enforce HTTPS for non-Tailscale deployments ONLY when API key is configured
         // This prevents API key exposure over HTTP while allowing HTTP for:
         // - Tailscale deployments (encrypted at network layer)
@@ -58,29 +53,15 @@ impl ProxyClient {
             ));
         }
 
-        let client = Client::builder()
-            .timeout(timeout)
-            .connect_timeout(connect_timeout)
-            // CRITICAL: Disable redirects to prevent SSRF bypass
-            // An attacker could redirect to internal IPs (e.g., 169.254.169.254)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {}", e))?;
-
-        // Default allowed endpoints
-        let allowed_endpoints: HashSet<String> = [
-            "v1/chat/completions".to_string(),
-            "v1/messages".to_string(),
-            "v1/models".to_string(),
-            "v1/embeddings".to_string(),
-        ]
-        .into_iter()
-        .collect();
+        let client = create_client_with_timeouts(
+            http_config.request_timeout_secs,
+            http_config.connect_timeout_secs,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {}", e))?;
 
         Ok(Self {
             client,
             aperture_config,
-            allowed_endpoints,
             max_streaming_size_bytes,
         })
     }
@@ -273,8 +254,8 @@ impl ProxyClient {
     /// Validate endpoint and return parsed URL
     /// Performs endpoint whitelist check, URL parsing, scheme validation, and SSRF protection
     fn validate_endpoint(&self, endpoint: &str) -> anyhow::Result<url::Url> {
-        // Validate endpoint is in whitelist
-        if !self.allowed_endpoints.contains(endpoint) {
+        // Validate endpoint is in whitelist (using static list, no allocation)
+        if !is_allowed_endpoint(endpoint) {
             error!("Blocked request to disallowed endpoint: {}", endpoint);
             return Err(anyhow::anyhow!(
                 "Endpoint '{}' is not in the allowed list",

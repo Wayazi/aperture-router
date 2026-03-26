@@ -14,13 +14,15 @@
 use super::model_fetcher::{fetch_models, group_by_provider};
 use super::opencode_export::OpenCodeConfig;
 use super::security::safe_config_summary;
+#[cfg(feature = "wizard")]
 use super::wizard::ConfigWizard;
 use crate::config::Config;
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "wizard"))]
 use std::os::unix::fs::PermissionsExt;
 
 /// Run the interactive configuration wizard
+#[cfg(feature = "wizard")]
 pub async fn run_wizard(
     config_path: &str,
     aperture_url: Option<String>,
@@ -60,6 +62,19 @@ pub async fn run_wizard(
     println!("   Run 'aperture-router' to start the server.");
 
     Ok(())
+}
+
+/// Stub for wizard when feature is not enabled
+#[cfg(not(feature = "wizard"))]
+pub async fn run_wizard(
+    _config_path: &str,
+    _aperture_url: Option<String>,
+    _output_path: Option<String>,
+) -> anyhow::Result<()> {
+    Err(anyhow::anyhow!(
+        "Wizard feature not enabled. Build with --features wizard to use interactive configuration.\n\
+         Alternatively, use 'config generate' or set environment variables."
+    ))
 }
 
 /// Fetch and display models from Aperture
