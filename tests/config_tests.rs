@@ -353,3 +353,115 @@ mod config_tests {
             .contains(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
     }
 }
+
+#[cfg(test)]
+mod config_save_tests {
+    use aperture_router::config::Config;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_config_save_atomic_write() {
+        let config = Config::default();
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        let path = temp_file.path().to_str().unwrap().to_string();
+
+        // Save should not leave .tmp file on success
+        config.save(&path).expect("Failed to save config");
+
+        assert!(!std::path::Path::new(&format!("{}.tmp", path)).exists());
+        assert!(std::path::Path::new(&path).exists());
+
+        // Verify content is valid TOML
+        let content = std::fs::read_to_string(&path).expect("Failed to read saved config");
+        let loaded: Config = toml::from_str(&content).expect("Saved config is not valid TOML");
+        assert_eq!(loaded.host, config.host);
+        assert_eq!(loaded.port, config.port);
+    }
+
+    #[test]
+    fn test_config_save_overwrites_existing() {
+        let mut config = Config::default();
+        config.port = 8080;
+
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        let path = temp_file.path().to_str().unwrap().to_string();
+
+        config.save(&path).expect("Failed to save config");
+
+        // Modify and save again
+        config.port = 9090;
+        config.save(&path).expect("Failed to overwrite config");
+
+        let content = std::fs::read_to_string(&path).expect("Failed to read saved config");
+        let loaded: Config = toml::from_str(&content).expect("Saved config is not valid TOML");
+        assert_eq!(loaded.port, 9090);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_config_save_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let config = Config::default();
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        let path = temp_file.path().to_str().unwrap().to_string();
+
+        config.save(&path).expect("Failed to save config");
+
+        let metadata = std::fs::metadata(&path).expect("Failed to get metadata");
+        let mode = metadata.permissions().mode() & 0o777;
+
+        // Config file should have 0o600 permissions (owner read/write only)
+        assert_eq!(
+            mode, 0o600,
+            "Config file should have 0o600 permissions, got 0o{:o}",
+            mode
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_config_save_creates_with_secure_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let config = Config::default();
+
+        // Use a path that doesn't exist yet
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let path = temp_dir.path().join("new_config.toml");
+        let path_str = path.to_str().unwrap().to_string();
+
+        // File doesn't exist yet
+        assert!(!path.exists());
+
+        config.save(&path_str).expect("Failed to save config");
+
+        // Now it should exist with secure permissions
+        let metadata = std::fs::metadata(&path).expect("Failed to get metadata");
+        let mode = metadata.permissions().mode() & 0o777;
+
+        assert_eq!(
+            mode, 0o600,
+            "New config file should have 0o600 permissions, got 0o{:o}",
+            mode
+        );
+    }
+
+    #[test]
+    fn test_config_save_preserves_secrets() {
+        let mut config = Config::default();
+        config.security.api_keys = vec!["secret-key-with-sufficient-entropy-12345".to_string()];
+        config.security.admin_api_keys = vec!["admin-key-with-sufficient-entropy-123".to_string()];
+
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        let path = temp_file.path().to_str().unwrap().to_string();
+
+        config.save(&path).expect("Failed to save config");
+
+        let content = std::fs::read_to_string(&path).expect("Failed to read saved config");
+
+        // API keys should be in the saved file (they're not marked as secret in serialization)
+        assert!(content.contains("secret-key-with-sufficient-entropy-12345"));
+        assert!(content.contains("admin-key-with-sufficient-entropy-123"));
+    }
+}

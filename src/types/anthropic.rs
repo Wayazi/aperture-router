@@ -23,6 +23,9 @@ pub struct MessageRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    /// Metadata for the request (e.g., user_id)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
     /// Capture any other fields we don't explicitly handle
     #[serde(flatten)]
     pub other: HashMap<String, Value>,

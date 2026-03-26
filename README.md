@@ -7,11 +7,12 @@ Aperture Router is a lightweight, high-performance Rust proxy that enables **any
 ## Features
 
 - ✅ **Universal Compatibility** - Works with Claude Code, OpenCode, Pi, and any OpenAI/Anthropic-compatible tool
-- ✅ **Model Discovery** - Automatically discovers all available models from your Aperture gateway
+- ✅ **Dynamic Model Discovery** - Auto-discovers models from Aperture at runtime, no hardcoded providers
+- ✅ **Auto-Refresh** - Model list refreshes automatically with configurable interval
 - ✅ **Dual API Support** - OpenAI (`/v1/chat/completions`) and Anthropic (`/v1/messages`) formats
-- ✅ **Zero Configuration** - Works out of the box with sensible defaults
+- ✅ **Interactive CLI** - Configuration wizard for easy setup
 - ✅ **Fast & Lightweight** - Written in Rust for maximum performance
-- ✅ **Secure** - Uses Tailscale identity, no API keys needed on client
+- ✅ **Secure** - Zeroizing API keys, timing-safe comparison, SSRF protection
 
 ## Quick Start
 
@@ -42,19 +43,22 @@ paru -S aperture-router
 
 ### Configuration
 
-Create a `config.toml` file:
+Run the interactive wizard:
+
+```bash
+aperture-router config wizard --url http://your-aperture-gateway
+```
+
+Or create a `config.toml` file manually:
 
 ```toml
 [server]
 host = "127.0.0.1"
-port = 8080
+port = 8765
 
 [aperture]
 base_url = "http://100.100.100.100"  # Your Aperture gateway
 model_refresh_interval_secs = 300
-
-[logging]
-level = "info"
 ```
 
 Or use environment variables:
@@ -62,7 +66,7 @@ Or use environment variables:
 ```bash
 export APERTURE_BASE_URL=http://100.100.100.100
 export APERTURE_ROUTER_HOST=127.0.0.1
-export APERTURE_ROUTER_PORT=8080
+export APERTURE_ROUTER_PORT=8765
 ```
 
 ### Usage
@@ -79,24 +83,57 @@ Or with debug mode:
 aperture-router --debug
 ```
 
+## CLI Commands
+
+```bash
+# Start the router
+aperture-router run
+
+# Interactive configuration wizard
+aperture-router config wizard
+
+# Fetch and display models from Aperture
+aperture-router config fetch --url http://your-gateway
+
+# List current configuration
+aperture-router config list
+
+# Export config for OpenCode
+aperture-router config export --opencode
+
+# Validate configuration
+aperture-router config validate
+```
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check |
-| `/v1/models` | GET | List available models |
+| `/v1/models` | GET | List available models (from Aperture) |
 | `/v1/chat/completions` | POST | OpenAI-compatible endpoint |
 | `/v1/messages` | POST | Anthropic-compatible endpoint |
 | `/v1/proxy` | POST | Generic streaming proxy endpoint |
+| `/admin/stats` | GET | Server statistics (requires admin key) |
+| `/admin/refresh-models` | POST | Force model refresh (requires admin key) |
 
 ## Advanced Features
 
+- ✅ **Dynamic Discovery** - Models and providers discovered at runtime, no hardcoded lists
+- ✅ **Auto-Refresh** - Background task keeps model list current
 - ✅ **SSE Streaming** - Full Server-Sent Events support for streaming responses
 - ✅ **Tool/Function Calling** - Supports OpenAI tool_calls and Anthropic tool_use
 - ✅ **Extended Thinking** - Filters or includes Claude's thinking blocks
-- ✅ **Model Validation** - Validates requested models against available ones
+- ✅ **Graceful Shutdown** - Clean termination with CancellationToken
+
+## Security Features
+
+- ✅ **Zeroizing API Keys** - Keys securely wiped from memory
+- ✅ **Timing-Safe Auth** - Constant-time comparison prevents timing attacks
+- ✅ **SSRF Protection** - Blocks access to internal endpoints and metadata APIs
+- ✅ **Secure File Permissions** - Config files created with 0o600
 - ✅ **Rate Limiting** - Built-in authentication rate limiting
-- ✅ **SSRF Protection** - Blocks access to internal endpoints
+- ✅ **Security Headers** - CSP, X-Frame-Options, HSTS, X-Content-Type-Options
 
 ## Documentation
 
@@ -110,7 +147,7 @@ aperture-router --debug
 # Build
 cargo build
 
-# Run tests
+# Run tests (151 tests)
 cargo test
 
 # Run with debug logging

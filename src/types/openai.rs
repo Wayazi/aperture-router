@@ -2,8 +2,11 @@
 // Copyright (c) 2026 aperture-router contributors
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 
 /// OpenAI chat completion request
+/// Uses flatten to pass through all fields we don't explicitly handle
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
@@ -15,14 +18,33 @@ pub struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<serde_json::Value>>,
+    pub tools: Option<Vec<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<Value>,
+    /// Capture any other fields we don't explicitly handle
+    #[serde(flatten)]
+    pub other: HashMap<String, Value>,
 }
 
-/// Chat message
+/// Chat message - supports all OpenAI message formats including tool calls
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    /// Content can be string, null, or array (for tool results)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Value>,
+    /// Tool calls (for assistant messages with tool use)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<Value>>,
+    /// Tool call ID (for tool response messages)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Name (for tool response messages)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Capture any other fields we don't explicitly handle
+    #[serde(flatten)]
+    pub other: HashMap<String, Value>,
 }
 
 /// OpenAI chat completion response

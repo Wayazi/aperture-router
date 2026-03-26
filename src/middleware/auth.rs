@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
+use zeroize::Zeroizing;
 
 /// Helper to hash an API key for logging (without exposing the actual key)
 fn hash_api_key(key: &str) -> String {
@@ -26,10 +27,11 @@ fn hash_api_key(key: &str) -> String {
 }
 
 /// Authentication state with rate limiting
+/// Uses Zeroizing<String> to securely wipe API keys from memory on drop
 #[derive(Clone)]
 pub struct AuthState {
-    pub api_keys: Vec<String>,
-    pub admin_api_keys: Vec<String>,
+    pub api_keys: Vec<Zeroizing<String>>,
+    pub admin_api_keys: Vec<Zeroizing<String>>,
     pub failed_attempts: Arc<RwLock<HashMap<IpAddr, Vec<Instant>>>>,
     pub max_attempts: usize,
     pub ban_duration: Duration,
@@ -41,7 +43,11 @@ impl AuthState {
     pub fn new(security_config: &SecurityConfig, cors_config: &CorsConfig) -> Self {
         // Security: Do NOT fall back to regular keys for admin operations
         // Admin endpoints require explicit admin_api_keys configuration
-        let admin_keys = security_config.admin_api_keys.clone();
+        let admin_keys: Vec<Zeroizing<String>> = security_config
+            .admin_api_keys
+            .iter()
+            .map(|k| Zeroizing::new(k.clone()))
+            .collect();
 
         // Log a warning if admin keys are not configured
         if admin_keys.is_empty() {
@@ -52,7 +58,11 @@ impl AuthState {
         }
 
         Self {
-            api_keys: security_config.api_keys.clone(),
+            api_keys: security_config
+                .api_keys
+                .iter()
+                .map(|k| Zeroizing::new(k.clone()))
+                .collect(),
             admin_api_keys: admin_keys,
             failed_attempts: Arc::new(RwLock::new(HashMap::new())),
             max_attempts: security_config.max_auth_attempts,
@@ -125,19 +135,32 @@ impl AuthState {
         })
     }
 
+    /// Validate API key with timing-safe comparison
+    /// Compares against ALL keys to prevent timing attacks
     pub fn validate_api_key(&self, key: &str) -> bool {
-        // Use HashSet for O(1) lookup
-        self.api_keys
-            .iter()
-            .any(|valid_key| valid_key.as_bytes().ct_eq(key.as_bytes()).into())
+        // Timing-safe: compare against ALL keys, not short-circuit
+        let key_bytes = key.as_bytes();
+        let mut found = false;
+        for valid_key in &self.api_keys {
+            // Always perform the comparison (no short-circuit)
+            let matches: bool = valid_key.as_bytes().ct_eq(key_bytes).into();
+            found = found || matches;
+        }
+        found
     }
 
-    /// Validate admin API key - checks admin_api_keys specifically
+    /// Validate admin API key with timing-safe comparison
+    /// Compares against ALL keys to prevent timing attacks
     pub fn validate_admin_key(&self, key: &str) -> bool {
-        // Use HashSet for O(1) lookup with constant-time comparison
-        self.admin_api_keys
-            .iter()
-            .any(|valid_key| valid_key.as_bytes().ct_eq(key.as_bytes()).into())
+        // Timing-safe: compare against ALL keys, not short-circuit
+        let key_bytes = key.as_bytes();
+        let mut found = false;
+        for valid_key in &self.admin_api_keys {
+            // Always perform the comparison (no short-circuit)
+            let matches: bool = valid_key.as_bytes().ct_eq(key_bytes).into();
+            found = found || matches;
+        }
+        found
     }
 }
 
