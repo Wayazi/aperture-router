@@ -1,0 +1,5 @@
+# systemd sysusers.d configuration for aperture-router
+# This file creates the aperture-router user and group automatically
+#
+# Type Name            ID GECOS                  Home directory          Shell
+u     aperture-router -  "Aperture Router daemon" /var/lib/aperture-router -

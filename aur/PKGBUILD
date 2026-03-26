@@ -9,6 +9,7 @@ license=('MIT')
 depends=('gcc-libs')
 makedepends=('cargo')
 install="$pkgname.install"
+backup=('etc/sysconfig/aperture-router')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
@@ -41,6 +42,7 @@ package() {
   # Systemd service
   install -Dm644 "contrib/systemd/aperture-router.service" "$pkgdir/usr/lib/systemd/system/aperture-router.service"
   install -Dm644 "contrib/systemd/aperture-router.tmpfiles" "$pkgdir/usr/lib/tmpfiles.d/aperture-router.conf"
+  install -Dm644 "contrib/systemd/aperture-router.sysusers" "$pkgdir/usr/lib/sysusers.d/aperture-router.conf"
 
   # Sysconfig (environment file template)
   install -Dm644 "contrib/systemd/aperture-router.sysconfig" "$pkgdir/etc/sysconfig/aperture-router"

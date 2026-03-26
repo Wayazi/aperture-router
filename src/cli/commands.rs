@@ -207,3 +207,107 @@ pub fn validate_config(config_path: &str) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// Generate config from environment variables (non-interactive)
+pub fn generate_config(
+    config_path: &str,
+    url: Option<String>,
+    output_path: Option<String>,
+    generate_key: bool,
+) -> anyhow::Result<()> {
+    // Get URL from argument or environment
+    let aperture_url = url
+        .or_else(|| std::env::var("APERTURE_BASE_URL").ok())
+        .ok_or_else(|| anyhow::anyhow!(
+            "Aperture URL required. Use --url or set APERTURE_BASE_URL environment variable"
+        ))?;
+
+    // Create minimal config
+    let mut config = Config::default();
+    config.aperture.base_url = aperture_url.clone();
+
+    // Generate API key if requested
+    if generate_key {
+        let api_key = generate_api_key();
+        config.security.api_keys = vec![api_key.clone()];
+        println!("🔑 Generated API key: {}", api_key);
+        println!("   Save this key securely - it won't be shown again!");
+        println!();
+    }
+
+    // Get API key from environment if set
+    if let Ok(key) = std::env::var("APERTURE_API_KEY") {
+        if !key.is_empty() {
+            config.security.api_keys = vec![key];
+        }
+    }
+
+    // Allow no auth if explicitly set
+    if std::env::var("APERTURE_ALLOW_NO_AUTH").is_ok() {
+        config.security.require_auth_in_prod = false;
+    }
+
+    // Save config
+    let save_path = output_path.as_deref().unwrap_or(config_path);
+    config.save(save_path)?;
+
+    println!("✓ Config generated at {}", save_path);
+    println!();
+    println!("Aperture URL: {}", aperture_url);
+    println!("API Keys: {}", if config.security.api_keys.is_empty() { "none" } else { "configured" });
+    println!("Auth Required: {}", config.security.require_auth_in_prod);
+    println!();
+    println!("To start the server:");
+    println!("  aperture-router --config {}", save_path);
+
+    Ok(())
+}
+
+/// Generate a secure random API key that passes validation (32+ chars, 20+ unique)
+/// Uses base62 encoding (a-z, A-Z, 0-9) to ensure sufficient character diversity
+fn generate_api_key() -> String {
+    // Base62 alphabet: a-z (26) + A-Z (26) + 0-9 (10) = 62 unique characters
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+    let mut result = String::with_capacity(40);
+    result.push_str("apr_");
+
+    // Use two UUIDs to ensure we have enough bytes for 32+ character output
+    let uuid1 = uuid::Uuid::new_v4();
+    let uuid2 = uuid::Uuid::new_v4();
+
+    // Combine both UUIDs into a single number for base62 encoding
+    let bytes1 = uuid1.as_bytes();
+    let bytes2 = uuid2.as_bytes();
+
+    // Encode first UUID
+    let mut num1 = u128::from_be_bytes([
+        bytes1[0], bytes1[1], bytes1[2], bytes1[3],
+        bytes1[4], bytes1[5], bytes1[6], bytes1[7],
+        bytes1[8], bytes1[9], bytes1[10], bytes1[11],
+        bytes1[12], bytes1[13], bytes1[14], bytes1[15],
+    ]);
+
+    while num1 > 0 {
+        let rem = (num1 % 62) as usize;
+        result.push(ALPHABET[rem] as char);
+        num1 /= 62;
+    }
+
+    // Encode second UUID if needed for length
+    let mut num2 = u128::from_be_bytes([
+        bytes2[0], bytes2[1], bytes2[2], bytes2[3],
+        bytes2[4], bytes2[5], bytes2[6], bytes2[7],
+        bytes2[8], bytes2[9], bytes2[10], bytes2[11],
+        bytes2[12], bytes2[13], bytes2[14], bytes2[15],
+    ]);
+
+    // Ensure we reach at least 32 characters
+    while result.len() < 36 && num2 > 0 {
+        let rem = (num2 % 62) as usize;
+        result.push(ALPHABET[rem] as char);
+        num2 /= 62;
+    }
+
+    result
+}

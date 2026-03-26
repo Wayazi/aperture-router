@@ -49,6 +49,21 @@ enum ConfigCommands {
         output: Option<String>,
     },
 
+    /// Generate config from environment variables (non-interactive)
+    Generate {
+        /// Aperture gateway URL (required if APERTURE_BASE_URL not set)
+        #[arg(short, long)]
+        url: Option<String>,
+
+        /// Output config file path
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Generate an API key automatically
+        #[arg(long)]
+        generate_key: bool,
+    },
+
     /// Fetch models from Aperture and display them
     Fetch {
         /// Aperture gateway URL
@@ -127,9 +142,51 @@ async fn main() -> anyhow::Result<()> {
 async fn run_server(config_path: &str) -> anyhow::Result<()> {
     info!("Starting Aperture Router v{}", env!("CARGO_PKG_VERSION"));
 
-    // Load configuration
-    let config = Config::load(config_path)?;
-    info!("Loaded configuration from {}", config_path);
+    // Try to load config, or create from environment
+    let config = if std::path::Path::new(config_path).exists() {
+        Config::load(config_path)?
+    } else {
+        // Try environment-only mode
+        if let Ok(base_url) = std::env::var("APERTURE_BASE_URL") {
+            info!("No config file found, using environment variables");
+            let mut config = Config::default();
+            config.aperture.base_url = base_url.clone();
+
+            // Check for API key in environment
+            if let Ok(key) = std::env::var("APERTURE_API_KEY") {
+                if !key.is_empty() {
+                    config.security.api_keys = vec![key];
+                }
+            }
+
+            // Allow no auth
+            if std::env::var("APERTURE_ALLOW_NO_AUTH").is_ok() {
+                config.security.require_auth_in_prod = false;
+            }
+
+            // Validate environment-built config
+            config.validate().map_err(|e| anyhow::anyhow!("Config validation failed: {}", e))?;
+
+            config
+        } else {
+            return Err(anyhow::anyhow!(
+                "No config file found at '{}' and APERTURE_BASE_URL not set.\n\
+                 \n\
+                 Quick start options:\n\
+                   1. Set environment variable:\n\
+                      export APERTURE_BASE_URL=http://your-aperture-gateway:8080\n\
+                      aperture-router\n\
+                   \n\
+                   2. Run the wizard:\n\
+                      aperture-router config wizard\n\
+                   \n\
+                   3. Generate config:\n\
+                      aperture-router config generate --url http://your-gateway:8080",
+                config_path
+            ));
+        }
+    };
+
     info!("Aperture gateway: {}", config.aperture.base_url);
     info!("Server address: {}", config.server_addr()?);
 
@@ -173,6 +230,9 @@ async fn handle_config_command(cmd: ConfigCommands, config_path: &str) -> anyhow
     match cmd {
         ConfigCommands::Wizard { url, output } => {
             commands::run_wizard(config_path, url, output).await?;
+        }
+        ConfigCommands::Generate { url, output, generate_key } => {
+            commands::generate_config(config_path, url, output, generate_key)?;
         }
         ConfigCommands::Fetch { url } => {
             commands::fetch_models_cmd(&url).await?;
