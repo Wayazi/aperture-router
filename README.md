@@ -10,15 +10,27 @@ Aperture Router is a lightweight, high-performance Rust proxy that enables **any
 - ✅ **Dynamic Model Discovery** - Auto-discovers models from Aperture at runtime, no hardcoded providers
 - ✅ **Auto-Refresh** - Model list refreshes automatically with configurable interval
 - ✅ **Dual API Support** - OpenAI (`/v1/chat/completions`) and Anthropic (`/v1/messages`) formats
-- ✅ **Interactive CLI** - Configuration wizard for easy setup
+- ✅ **One-Command Setup** - Environment variables or wizard, no manual config editing needed
 - ✅ **Fast & Lightweight** - Written in Rust for maximum performance
 - ✅ **Secure** - Zeroizing API keys, timing-safe comparison, SSRF protection
 
-## Quick Start
+## Installation
 
-### Installation
+### Option 1: AUR (Arch Linux) - Recommended
 
-#### From Source
+```bash
+yay -S aperture-router
+# or
+paru -S aperture-router
+```
+
+### Option 2: Cargo
+
+```bash
+cargo install aperture-router
+```
+
+### Option 3: From Source
 
 ```bash
 git clone https://github.com/Wayazi/aperture-router
@@ -27,82 +39,126 @@ cargo build --release
 sudo cp target/release/aperture-router /usr/local/bin/
 ```
 
-#### Cargo
+## Quick Start
+
+### Method 1: Environment Variables (Fastest)
+
+No config file needed! Just set your Aperture URL:
 
 ```bash
-cargo install aperture-router
-```
-
-#### AUR (Arch Linux)
-
-```bash
-yay -S aperture-router
-# or
-paru -S aperture-router
-```
-
-### Configuration
-
-Run the interactive wizard:
-
-```bash
-aperture-router config wizard --url http://your-aperture-gateway
-```
-
-Or create a `config.toml` file manually:
-
-```toml
-[server]
-host = "127.0.0.1"
-port = 8765
-
-[aperture]
-base_url = "http://100.100.100.100"  # Your Aperture gateway
-model_refresh_interval_secs = 300
-```
-
-Or use environment variables:
-
-```bash
-export APERTURE_BASE_URL=http://100.100.100.100
-export APERTURE_ROUTER_HOST=127.0.0.1
-export APERTURE_ROUTER_PORT=8765
-```
-
-### Usage
-
-Start the server:
-
-```bash
+export APERTURE_BASE_URL=http://your-aperture-gateway:8080
 aperture-router
 ```
 
-Or with debug mode:
+With authentication:
 
 ```bash
-aperture-router --debug
+export APERTURE_BASE_URL=http://your-aperture-gateway:8080
+export APERTURE_API_KEY=your-api-key-here-at-least-32-characters
+aperture-router
+```
+
+### Method 2: Generate Config
+
+Quick config generation with auto-generated API key:
+
+```bash
+aperture-router config generate --url http://your-aperture-gateway:8080 --generate-key
+```
+
+Or with your own API key:
+
+```bash
+aperture-router config generate --url http://your-aperture-gateway:8080 \
+  --output /etc/aperture-router/config.toml
+```
+
+### Method 3: Interactive Wizard
+
+Full interactive setup with model selection:
+
+```bash
+aperture-router config wizard
+```
+
+The wizard will:
+1. Connect to your Aperture gateway
+2. Discover available models and providers
+3. Let you select which providers/models to use
+4. Optionally generate OpenCode config
+5. Save everything to `config.toml`
+
+### Method 4: Systemd Service (Arch Linux)
+
+```bash
+# Install
+yay -S aperture-router
+
+# Set your Aperture URL
+echo "APERTURE_BASE_URL=http://your-aperture-gateway:8080" | sudo tee /etc/sysconfig/aperture-router
+
+# Start service
+sudo systemctl enable --now aperture-router
+
+# Check status
+sudo systemctl status aperture-router
 ```
 
 ## CLI Commands
 
 ```bash
-# Start the router
-aperture-router run
+# Start the router (default)
+aperture-router
 
-# Interactive configuration wizard
-aperture-router config wizard
+# Start with debug logging
+aperture-router --debug
 
-# Fetch and display models from Aperture
-aperture-router config fetch --url http://your-gateway
+# Use specific config file
+aperture-router --config /path/to/config.toml
 
-# List current configuration
-aperture-router config list
+# Configuration commands
+aperture-router config wizard              # Interactive setup
+aperture-router config generate --url URL  # Quick config generation
+aperture-router config fetch --url URL     # List available models
+aperture-router config list                # Show current config
+aperture-router config validate            # Validate config
 
-# Export config for OpenCode
+# Export for OpenCode
 aperture-router config export --opencode
+```
 
-# Validate configuration
-aperture-router config validate
+## Environment Variables
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `APERTURE_BASE_URL` | Aperture gateway URL (required if no config) | `http://100.100.100.100:8080` |
+| `APERTURE_API_KEY` | API key for authentication | `your-32-char-key-here` |
+| `APERTURE_ALLOW_NO_AUTH` | Disable auth requirement (dev only) | `1` |
+| `RUST_LOG` | Logging level | `debug`, `info` |
+
+## Config File
+
+Default location: `config.toml` in current directory, or `/etc/aperture-router/config.toml` for systemd.
+
+```toml
+host = "127.0.0.1"
+port = 8765
+
+[aperture]
+base_url = "http://your-aperture-gateway:8080"
+model_refresh_interval_secs = 300
+
+[security]
+api_keys = ["your-api-key-at-least-32-characters"]
+admin_api_keys = ["admin-key-at-least-32-characters"]
+require_auth_in_prod = true
+
+[cors]
+allowed_origins = ["http://localhost:3000"]
+
+[rate_limit]
+requests_per_second = 10
+burst_size = 30
 ```
 
 ## API Endpoints
@@ -110,36 +166,55 @@ aperture-router config validate
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check |
-| `/v1/models` | GET | List available models (from Aperture) |
+| `/v1/models` | GET | List available models |
 | `/v1/chat/completions` | POST | OpenAI-compatible endpoint |
 | `/v1/messages` | POST | Anthropic-compatible endpoint |
-| `/v1/proxy` | POST | Generic streaming proxy endpoint |
-| `/admin/stats` | GET | Server statistics (requires admin key) |
-| `/admin/refresh-models` | POST | Force model refresh (requires admin key) |
-
-## Advanced Features
-
-- ✅ **Dynamic Discovery** - Models and providers discovered at runtime, no hardcoded lists
-- ✅ **Auto-Refresh** - Background task keeps model list current
-- ✅ **SSE Streaming** - Full Server-Sent Events support for streaming responses
-- ✅ **Tool/Function Calling** - Supports OpenAI tool_calls and Anthropic tool_use
-- ✅ **Extended Thinking** - Filters or includes Claude's thinking blocks
-- ✅ **Graceful Shutdown** - Clean termination with CancellationToken
+| `/v1/proxy` | POST | Generic streaming proxy |
+| `/admin/stats` | GET | Server statistics (admin key) |
+| `/admin/refresh-models` | POST | Force model refresh (admin key) |
 
 ## Security Features
 
 - ✅ **Zeroizing API Keys** - Keys securely wiped from memory
 - ✅ **Timing-Safe Auth** - Constant-time comparison prevents timing attacks
-- ✅ **SSRF Protection** - Blocks access to internal endpoints and metadata APIs
-- ✅ **Secure File Permissions** - Config files created with 0o600
+- ✅ **SSRF Protection** - Blocks access to metadata endpoints (169.254.169.254, etc.)
+- ✅ **Secure File Permissions** - Config files created with `0o600` (owner read/write only)
 - ✅ **Rate Limiting** - Built-in authentication rate limiting
-- ✅ **Security Headers** - CSP, X-Frame-Options, HSTS, X-Content-Type-Options
+- ✅ **Security Headers** - CSP, X-Frame-Options, HSTS
+
+## Using with AI Tools
+
+### Claude Code
+
+```bash
+# In Claude Code settings, set API base:
+http://127.0.0.1:8765
+```
+
+### OpenCode
+
+The wizard can auto-generate OpenCode config:
+
+```bash
+aperture-router config wizard
+# Select "Yes" when asked about OpenCode export
+```
+
+Or manually:
+
+```bash
+aperture-router config export --opencode --output ~/.config/opencode/opencode.json
+```
+
+### Any OpenAI-Compatible Tool
+
+Set the API base URL to `http://127.0.0.1:8765`
 
 ## Documentation
 
 - [INSTALL.md](INSTALL.md) - Detailed installation guide
 - [DEPLOYMENT.md](DEPLOYMENT.md) - Production deployment guide
-- [CHANGELOG.md](CHANGELOG.md) - Version history and changes
+- [CHANGELOG.md](CHANGELOG.md) - Version history
 
 ## Development
 
@@ -147,7 +222,7 @@ aperture-router config validate
 # Build
 cargo build
 
-# Run tests (151 tests)
+# Run tests (146 tests)
 cargo test
 
 # Run with debug logging
