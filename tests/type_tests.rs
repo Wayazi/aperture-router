@@ -3,6 +3,8 @@
 
 use aperture_router::types::anthropic::{Message, MessageRequest};
 use aperture_router::types::openai::{ChatCompletionRequest, ChatMessage};
+use serde_json::Value;
+use std::collections::HashMap;
 
 #[cfg(test)]
 mod type_tests {
@@ -15,17 +17,27 @@ mod type_tests {
             messages: vec![
                 ChatMessage {
                     role: "system".to_string(),
-                    content: "You are a helpful assistant.".to_string(),
+                    content: Some(Value::String("You are a helpful assistant.".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    other: HashMap::new(),
                 },
                 ChatMessage {
                     role: "user".to_string(),
-                    content: "Hello!".to_string(),
+                    content: Some(Value::String("Hello!".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    other: HashMap::new(),
                 },
             ],
             temperature: Some(0.7),
             max_tokens: Some(100),
             stream: Some(false),
             tools: None,
+            tool_choice: None,
+            other: HashMap::new(),
         };
 
         let json = serde_json::to_string(&request).expect("Failed to serialize");
@@ -82,7 +94,6 @@ mod type_tests {
     #[test]
     fn test_anthropic_message_request_serialization() {
         use aperture_router::types::anthropic::Content;
-        use std::collections::HashMap;
 
         let request = MessageRequest {
             model: "claude-3-sonnet-20240229".to_string(),
@@ -96,6 +107,7 @@ mod type_tests {
             tool_choice: None,
             temperature: Some(0.7),
             stream: None,
+            metadata: None,
             other: HashMap::new(),
         };
 
@@ -134,25 +146,43 @@ mod type_tests {
             messages: vec![
                 ChatMessage {
                     role: "system".to_string(),
-                    content: "System prompt".to_string(),
+                    content: Some(Value::String("System prompt".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    other: HashMap::new(),
                 },
                 ChatMessage {
                     role: "user".to_string(),
-                    content: "First user message".to_string(),
+                    content: Some(Value::String("First user message".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    other: HashMap::new(),
                 },
                 ChatMessage {
                     role: "assistant".to_string(),
-                    content: "Assistant response".to_string(),
+                    content: Some(Value::String("Assistant response".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    other: HashMap::new(),
                 },
                 ChatMessage {
                     role: "user".to_string(),
-                    content: "Second user message".to_string(),
+                    content: Some(Value::String("Second user message".to_string())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    other: HashMap::new(),
                 },
             ],
             temperature: None,
             max_tokens: None,
             stream: None,
             tools: None,
+            tool_choice: None,
+            other: HashMap::new(),
         };
 
         assert_eq!(request.messages.len(), 4);
@@ -168,6 +198,8 @@ mod type_tests {
             max_tokens: Some(0),
             stream: Some(false),
             tools: None,
+            tool_choice: None,
+            other: HashMap::new(),
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -183,12 +215,18 @@ mod type_tests {
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
-                content: "Test".to_string(),
+                content: Some(Value::String("Test".to_string())),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                other: HashMap::new(),
             }],
             temperature: Some(2.0),
             max_tokens: Some(4096),
             stream: Some(true),
             tools: None,
+            tool_choice: None,
+            other: HashMap::new(),
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -221,12 +259,18 @@ mod type_tests {
             model: "gpt-4-turbo-preview".to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
-                content: "Test".to_string(),
+                content: Some(Value::String("Test".to_string())),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                other: HashMap::new(),
             }],
             temperature: None,
             max_tokens: None,
             stream: None,
             tools: None,
+            tool_choice: None,
+            other: HashMap::new(),
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -250,5 +294,33 @@ mod type_tests {
 
         let result: Result<ChatCompletionRequest, _> = serde_json::from_str(missing_model);
         assert!(result.is_err(), "Missing 'model' field should fail");
+    }
+
+    #[test]
+    fn test_tool_calls_in_message() {
+        let json = r#"
+            {
+                "model": "gpt-4",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [
+                            {
+                                "id": "call_123",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_weather",
+                                    "arguments": "{\"location\": \"SF\"}"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        "#;
+
+        let request: ChatCompletionRequest = serde_json::from_str(json).expect("Failed to deserialize");
+        assert!(request.messages[0].tool_calls.is_some());
     }
 }

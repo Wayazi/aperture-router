@@ -529,10 +529,10 @@ impl Config {
             return Err("Max streaming size cannot exceed 1GB".to_string());
         }
 
-        // Production safety check
+        // Production safety check - only enforce in release builds (production)
         if self.security.require_auth_in_prod
             && self.security.api_keys.is_empty()
-            && cfg!(debug_assertions)
+            && !cfg!(debug_assertions)
         {
             return Err("Production mode requires authentication but no API keys configured. Set APERTURE_ALLOW_NO_AUTH=1 to override (not recommended)".to_string());
         }
@@ -584,6 +584,44 @@ impl Config {
             }
         }
 
+        Ok(())
+    }
+
+    /// Save configuration to TOML file (atomic write with secure permissions)
+    pub fn save(&self, path: &str) -> anyhow::Result<()> {
+        let toml_content = toml::to_string_pretty(self)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))?;
+
+        // Write atomically using temp file with secure permissions from the start
+        let temp_path = format!("{}.tmp", path);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600) // Secure permissions from creation
+                .open(&temp_path)
+                .and_then(|mut file| std::io::Write::write_all(&mut file, toml_content.as_bytes()))
+                .map_err(|e| anyhow::anyhow!("Failed to write temp config file: {}", e))?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&temp_path, &toml_content)
+                .map_err(|e| anyhow::anyhow!("Failed to write temp config file: {}", e))?;
+        }
+
+        // Rename temp to final (atomic on Unix)
+        std::fs::rename(&temp_path, path)
+            .map_err(|e| {
+                // Clean up temp file on failure
+                let _ = std::fs::remove_file(&temp_path);
+                anyhow::anyhow!("Failed to rename config file: {}", e)
+            })?;
+
+        tracing::info!("Configuration saved to {}", path);
         Ok(())
     }
 }
