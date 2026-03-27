@@ -42,6 +42,8 @@ health_burst_size = 50
 # API keys for authentication (empty = no authentication)
 # Generate strong keys with: openssl rand -base64 32
 api_keys = []
+# Admin API keys for /admin/* endpoints (separate from regular keys)
+# admin_api_keys = []
 # Maximum request body size (prevents DoS via large uploads)
 max_body_size_bytes = 10485760  # 10MB
 # Maximum failed authentication attempts per window

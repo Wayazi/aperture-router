@@ -222,7 +222,7 @@ Set the API base URL to `http://127.0.0.1:8765`
 # Build
 cargo build
 
-# Run tests (146 tests)
+# Run tests (154 tests)
 cargo test
 
 # Run with debug logging

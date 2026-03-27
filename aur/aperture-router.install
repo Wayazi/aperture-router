@@ -61,11 +61,10 @@ EOF
 }
 
 pre_remove() {
-  cat <<EOF
-
-==> Stopping aperture-router service...
-  $ sudo systemctl stop aperture-router
-  $ sudo systemctl disable aperture-router
-
-EOF
+  if systemctl is-active --quiet aperture-router; then
+    systemctl stop aperture-router
+  fi
+  if systemctl is-enabled --quiet aperture-router 2>/dev/null; then
+    systemctl disable aperture-router
+  fi
 }

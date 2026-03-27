@@ -25,6 +25,17 @@ ProtectHome=true
 ReadWritePaths=/var/lib/aperture-router
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictRealtime=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+PrivateDevices=true
+ProtectHostname=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
 
 # Resource limits
 LimitNOFILE=65536
