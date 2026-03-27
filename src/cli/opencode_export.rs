@@ -78,8 +78,7 @@ impl OpenCodeConfig {
             }
 
             // Heuristic: first flash/haiku model becomes small
-            if small_model.is_empty()
-                && (model.id.contains("flash") || model.id.contains("haiku"))
+            if small_model.is_empty() && (model.id.contains("flash") || model.id.contains("haiku"))
             {
                 small_model = format!("router/{}", model_id);
             }
@@ -133,7 +132,8 @@ impl OpenCodeConfig {
 
         // Get the new values
         if let Some(new_obj) = new_config.as_object() {
-            let existing_obj = existing.as_object_mut()
+            let existing_obj = existing
+                .as_object_mut()
                 .ok_or_else(|| anyhow::anyhow!("Existing config is not an object"))?;
 
             // Update only our specific fields, preserve everything else
@@ -155,10 +155,7 @@ impl OpenCodeConfig {
 }
 
 /// Create provider configurations from enriched models (dynamic, no hardcoded plans)
-pub fn create_providers_from_models(
-    models: &[EnrichedModel],
-    aperture_url: &str,
-) -> Vec<Provider> {
+pub fn create_providers_from_models(models: &[EnrichedModel], aperture_url: &str) -> Vec<Provider> {
     let mut providers: HashMap<String, Provider> = HashMap::new();
 
     for model in models {
@@ -213,7 +210,8 @@ mod tests {
             create_test_model("glm-4.7-flash", "glm2"),
         ];
 
-        let opencode = OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+        let opencode =
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
 
         assert!(opencode.model.starts_with("router/"));
         assert!(opencode.provider.contains_key("router"));
@@ -233,7 +231,8 @@ mod tests {
 
         let models = vec![create_test_model("GLM-5", "glm")];
 
-        let opencode = OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+        let opencode =
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
         let json = opencode.to_json().unwrap();
 
         assert!(json.contains("\"router\""));

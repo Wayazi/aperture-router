@@ -89,7 +89,11 @@ impl ProviderRegistry {
                 };
 
                 providers.insert(provider_id.clone(), new_provider);
-                info!("✨ Auto-added provider '{}' with {} models", provider_id, model_ids.len());
+                info!(
+                    "✨ Auto-added provider '{}' with {} models",
+                    provider_id,
+                    model_ids.len()
+                );
             } else {
                 // Update existing provider's model list
                 if let Some(provider) = providers.get_mut(provider_id) {
@@ -112,7 +116,10 @@ impl ProviderRegistry {
         drop(providers);
         drop(model_map);
 
-        info!("Registry updated: {} providers, {} models", total_providers, total_models);
+        info!(
+            "Registry updated: {} providers, {} models",
+            total_providers, total_models
+        );
     }
 
     /// Get provider for a specific model name
@@ -137,7 +144,12 @@ impl ProviderRegistry {
 
     /// Get all available models across all providers
     pub async fn all_models(&self) -> Vec<String> {
-        self.model_to_provider.read().await.keys().cloned().collect()
+        self.model_to_provider
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// Build the full endpoint URL for a provider based on endpoint style
@@ -253,10 +265,18 @@ mod tests {
         let registry = ProviderRegistry::new(vec![]);
 
         let mut discovered = HashMap::new();
-        discovered.insert("glm".to_string(), vec!["GLM-5".to_string(), "glm-4.7".to_string()]);
-        discovered.insert("glm2".to_string(), vec!["GLM-5".to_string(), "glm-4.7-flash".to_string()]);
+        discovered.insert(
+            "glm".to_string(),
+            vec!["GLM-5".to_string(), "glm-4.7".to_string()],
+        );
+        discovered.insert(
+            "glm2".to_string(),
+            vec!["GLM-5".to_string(), "glm-4.7-flash".to_string()],
+        );
 
-        registry.update_from_discovery(&discovered, "http://100.100.100.100").await;
+        registry
+            .update_from_discovery(&discovered, "http://100.100.100.100")
+            .await;
 
         assert!(registry.get_provider("glm").await.is_some());
         assert!(registry.get_provider("glm2").await.is_some());
@@ -291,8 +311,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_disabled_provider_not_included() {
-        let mut provider =
-            create_test_provider("disabled", "https://api.example.com", EndpointStyle::OpenaiV1, vec!["model-x"]);
+        let mut provider = create_test_provider(
+            "disabled",
+            "https://api.example.com",
+            EndpointStyle::OpenaiV1,
+            vec!["model-x"],
+        );
         provider.enabled = false;
 
         let registry = ProviderRegistry::new(vec![provider]);

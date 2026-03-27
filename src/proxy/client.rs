@@ -247,7 +247,11 @@ impl ProxyClient {
             ));
         }
 
-        info!("Request to {} succeeded with status: {}", url, response.status());
+        info!(
+            "Request to {} succeeded with status: {}",
+            url,
+            response.status()
+        );
         Ok(response)
     }
 

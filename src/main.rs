@@ -165,7 +165,9 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
             }
 
             // Validate environment-built config
-            config.validate().map_err(|e| anyhow::anyhow!("Config validation failed: {}", e))?;
+            config
+                .validate()
+                .map_err(|e| anyhow::anyhow!("Config validation failed: {}", e))?;
 
             config
         } else {
@@ -202,7 +204,11 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
     let discovery = Arc::new(ModelDiscovery::new(config.aperture.clone())?);
     info!("Fetching models from Aperture...");
     let snapshot = discovery.fetch_models().await?;
-    info!("Discovered {} models from {} providers", snapshot.models.len(), snapshot.providers.len());
+    info!(
+        "Discovered {} models from {} providers",
+        snapshot.models.len(),
+        snapshot.providers.len()
+    );
 
     for provider in &snapshot.providers {
         let models = discovery.get_models_for_provider(provider).await;
@@ -231,7 +237,11 @@ async fn handle_config_command(cmd: ConfigCommands, config_path: &str) -> anyhow
         ConfigCommands::Wizard { url, output } => {
             commands::run_wizard(config_path, url, output).await?;
         }
-        ConfigCommands::Generate { url, output, generate_key } => {
+        ConfigCommands::Generate {
+            url,
+            output,
+            generate_key,
+        } => {
             commands::generate_config(config_path, url, output, generate_key)?;
         }
         ConfigCommands::Fetch { url } => {

@@ -55,7 +55,10 @@ pub async fn run_wizard(
         #[cfg(unix)]
         std::fs::set_permissions(&opencode_path, std::fs::Permissions::from_mode(0o600))?;
 
-        println!("✓ OpenCode config saved to {:?} (preserved existing settings)", opencode_path);
+        println!(
+            "✓ OpenCode config saved to {:?} (preserved existing settings)",
+            opencode_path
+        );
     }
 
     println!("\n🎉 Configuration complete!");
@@ -100,7 +103,11 @@ pub async fn fetch_models_cmd(url: &str) -> anyhow::Result<()> {
     }
 
     println!("└{}", "─".repeat(62));
-    println!("\nTotal: {} models from {} providers", models.len(), grouped.len());
+    println!(
+        "\nTotal: {} models from {} providers",
+        models.len(),
+        grouped.len()
+    );
 
     Ok(())
 }
@@ -124,12 +131,23 @@ pub fn list_config(config_path: &str) -> anyhow::Result<()> {
     } else {
         println!("Providers (from config):");
         for provider in &config.providers {
-            let status = if provider.enabled { "enabled" } else { "disabled" };
+            let status = if provider.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
             println!("  {} [{}]", provider.name, status);
             println!("    URL: {}", provider.base_url);
             println!("    Style: {:?}", provider.endpoint_style);
             println!("    Models: {}", provider.models.join(", "));
-            println!("    API Key: {}", if provider.api_key.is_some() { "configured" } else { "none" });
+            println!(
+                "    API Key: {}",
+                if provider.api_key.is_some() {
+                    "configured"
+                } else {
+                    "none"
+                }
+            );
             println!();
         }
     }
@@ -160,7 +178,13 @@ pub fn toggle_provider(config_path: &str, provider_name: &str, enable: bool) -> 
             return Err(anyhow::anyhow!(
                 "Provider '{}' not found. Available: {}",
                 provider_name,
-                config.providers.iter().map(|p| &p.name).cloned().collect::<Vec<_>>().join(", ")
+                config
+                    .providers
+                    .iter()
+                    .map(|p| &p.name)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
     }
@@ -233,9 +257,11 @@ pub fn generate_config(
     // Get URL from argument or environment
     let aperture_url = url
         .or_else(|| std::env::var("APERTURE_BASE_URL").ok())
-        .ok_or_else(|| anyhow::anyhow!(
-            "Aperture URL required. Use --url or set APERTURE_BASE_URL environment variable"
-        ))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Aperture URL required. Use --url or set APERTURE_BASE_URL environment variable"
+            )
+        })?;
 
     // Create minimal config
     let mut config = Config::default();
@@ -269,7 +295,14 @@ pub fn generate_config(
     println!("✓ Config generated at {}", save_path);
     println!();
     println!("Aperture URL: {}", aperture_url);
-    println!("API Keys: {}", if config.security.api_keys.is_empty() { "none" } else { "configured" });
+    println!(
+        "API Keys: {}",
+        if config.security.api_keys.is_empty() {
+            "none"
+        } else {
+            "configured"
+        }
+    );
     println!("Auth Required: {}", config.security.require_auth_in_prod);
     println!();
     println!("To start the server:");
@@ -297,10 +330,9 @@ fn generate_api_key() -> String {
 
     // Encode first UUID
     let mut num1 = u128::from_be_bytes([
-        bytes1[0], bytes1[1], bytes1[2], bytes1[3],
-        bytes1[4], bytes1[5], bytes1[6], bytes1[7],
-        bytes1[8], bytes1[9], bytes1[10], bytes1[11],
-        bytes1[12], bytes1[13], bytes1[14], bytes1[15],
+        bytes1[0], bytes1[1], bytes1[2], bytes1[3], bytes1[4], bytes1[5], bytes1[6], bytes1[7],
+        bytes1[8], bytes1[9], bytes1[10], bytes1[11], bytes1[12], bytes1[13], bytes1[14],
+        bytes1[15],
     ]);
 
     while num1 > 0 {
@@ -311,10 +343,9 @@ fn generate_api_key() -> String {
 
     // Encode second UUID if needed for length
     let mut num2 = u128::from_be_bytes([
-        bytes2[0], bytes2[1], bytes2[2], bytes2[3],
-        bytes2[4], bytes2[5], bytes2[6], bytes2[7],
-        bytes2[8], bytes2[9], bytes2[10], bytes2[11],
-        bytes2[12], bytes2[13], bytes2[14], bytes2[15],
+        bytes2[0], bytes2[1], bytes2[2], bytes2[3], bytes2[4], bytes2[5], bytes2[6], bytes2[7],
+        bytes2[8], bytes2[9], bytes2[10], bytes2[11], bytes2[12], bytes2[13], bytes2[14],
+        bytes2[15],
     ]);
 
     // Ensure we reach at least 32 characters

@@ -186,15 +186,11 @@ impl ModelDiscovery {
                 .cloned()
                 .collect();
 
-            let added_providers: Vec<_> = new_providers
-                .difference(&old_providers)
-                .cloned()
-                .collect();
+            let added_providers: Vec<_> =
+                new_providers.difference(&old_providers).cloned().collect();
 
-            let removed_providers: Vec<_> = old_providers
-                .difference(&new_providers)
-                .cloned()
-                .collect();
+            let removed_providers: Vec<_> =
+                old_providers.difference(&new_providers).cloned().collect();
 
             (added, removed, (added_providers, removed_providers))
         };
@@ -234,7 +230,8 @@ impl ModelDiscovery {
                 .as_secs();
         }
 
-        info!("Discovered {} models from {} providers",
+        info!(
+            "Discovered {} models from {} providers",
             model_count,
             self.providers.read().await.len()
         );

@@ -46,19 +46,17 @@ impl Content {
     pub fn as_text(&self) -> String {
         match self {
             Content::Text(s) => s.clone(),
-            Content::Blocks(blocks) => {
-                blocks
-                    .iter()
-                    .filter_map(|b| {
-                        if b.r#type == "text" {
-                            b.text.as_ref().cloned()
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
+            Content::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|b| {
+                    if b.r#type == "text" {
+                        b.text.as_ref().cloned()
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
         }
     }
 }

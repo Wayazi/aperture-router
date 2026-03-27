@@ -71,7 +71,11 @@ pub async fn handle_proxy_stream(
     };
 
     // Forward request to Aperture
-    let response = match state.proxy_client.forward_request_stream(endpoint, body).await {
+    let response = match state
+        .proxy_client
+        .forward_request_stream(endpoint, body)
+        .await
+    {
         Ok(response) => response,
         Err(e) => {
             error!("Failed to forward streaming request: {}", e);

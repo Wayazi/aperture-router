@@ -2,13 +2,13 @@
 // Copyright (c) 2026 aperture-router contributors
 
 use axum::{body::Body, extract::State, Json};
-use http::{StatusCode, response::Response};
+use http::{response::Response, StatusCode};
 use reqwest::Response as ReqwestResponse;
 use serde::Serialize;
 use tracing::{debug, error, info};
 
-use crate::proxy::client::ProxyClient;
 use crate::config::Provider;
+use crate::proxy::client::ProxyClient;
 use crate::ProviderRegistry;
 
 /// Maximum response size (10MB) to prevent DoS
@@ -145,7 +145,10 @@ where
                 Err(r) => return r,
             };
 
-            match proxy_client.forward_request_to_url(&url, body, api_key.as_deref()).await {
+            match proxy_client
+                .forward_request_to_url(&url, body, api_key.as_deref())
+                .await
+            {
                 Ok(response) => process_upstream_response(response).await,
                 Err(e) => {
                     error!("Proxy error for provider '{}': {}", provider.name, e);
@@ -157,7 +160,10 @@ where
             }
         }
         None => {
-            debug!("No provider found for model '{}', using default gateway", model);
+            debug!(
+                "No provider found for model '{}', using default gateway",
+                model
+            );
             proxy_to_default_gateway(proxy_client, request, default_endpoint).await
         }
     }

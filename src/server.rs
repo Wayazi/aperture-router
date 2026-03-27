@@ -8,8 +8,8 @@ use axum::{
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tower_http::{
-    cors::CorsLayer, limit::RequestBodyLimitLayer,
-    set_header::SetResponseHeaderLayer, trace::TraceLayer,
+    cors::CorsLayer, limit::RequestBodyLimitLayer, set_header::SetResponseHeaderLayer,
+    trace::TraceLayer,
 };
 use tracing::info;
 
@@ -120,7 +120,10 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
 
 /// Create the router with all routes and middleware
 /// Returns (Router, CancellationToken) for graceful shutdown
-pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> (Router, CancellationToken) {
+pub fn create_router(
+    config: Config,
+    discovery: Arc<ModelDiscovery>,
+) -> (Router, CancellationToken) {
     info!("Creating router with authentication and CORS layers");
 
     // Create provider registry with Aperture URL for auto-discovery
@@ -148,10 +151,8 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> (Router,
 
     // Start model refresh task with registry sync and shutdown support
     let refresh_handle = Arc::new(Mutex::new(Some(
-        Arc::clone(&discovery).start_refresh_task(
-            Some(Arc::clone(&provider_registry)),
-            shutdown_token.clone(),
-        )
+        Arc::clone(&discovery)
+            .start_refresh_task(Some(Arc::clone(&provider_registry)), shutdown_token.clone()),
     )));
 
     // Setup CORS

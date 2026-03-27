@@ -123,10 +123,7 @@ mod tests {
 
     #[test]
     fn test_generate_display_name() {
-        assert_eq!(
-            generate_display_name("GLM-5", "glm"),
-            "GLM-5 [glm]"
-        );
+        assert_eq!(generate_display_name("GLM-5", "glm"), "GLM-5 [glm]");
         assert_eq!(
             generate_display_name("glm-4.7", "custom-provider"),
             "glm-4.7 [custom-provider]"
