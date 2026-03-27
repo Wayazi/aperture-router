@@ -58,11 +58,16 @@ pub async fn refresh_models(State(state): State<AppState>) -> impl IntoResponse 
             );
 
             // Update provider registry with discovered models
-            state.provider_registry
-                .update_from_discovery(&snapshot.models_by_provider, &state.config.aperture.base_url)
+            state
+                .provider_registry
+                .update_from_discovery(
+                    &snapshot.models_by_provider,
+                    &state.config.aperture.base_url,
+                )
                 .await;
 
-            let model_info: Vec<ModelInfo> = snapshot.models
+            let model_info: Vec<ModelInfo> = snapshot
+                .models
                 .iter()
                 .map(|m| ModelInfo {
                     id: m.id.clone(),
@@ -140,7 +145,8 @@ pub async fn get_stats(State(state): State<AppState>) -> impl IntoResponse {
 
     let snapshot = state.discovery.get_snapshot().await;
 
-    let provider_stats: Vec<ProviderStats> = snapshot.models_by_provider
+    let provider_stats: Vec<ProviderStats> = snapshot
+        .models_by_provider
         .iter()
         .map(|(name, models)| ProviderStats {
             name: name.clone(),

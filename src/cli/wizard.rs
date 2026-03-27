@@ -9,9 +9,7 @@
 //! - API key input (secure)
 //! - Configuration preview and save
 
-use inquire::{
-    validator::Validation, Confirm, CustomType, MultiSelect, Password, Text,
-};
+use inquire::{validator::Validation, Confirm, CustomType, MultiSelect, Password, Text};
 use std::collections::HashSet;
 
 use super::model_fetcher::{fetch_models, EnrichedModel};
@@ -121,21 +119,16 @@ impl ConfigWizard {
 
         Text::new("Aperture gateway URL:")
             .with_default(default)
-            .with_validator(|input: &str| {
-                match validate_url(input) {
-                    Ok(_) => Ok(Validation::Valid),
-                    Err(e) => Ok(Validation::Invalid(e.into())),
-                }
+            .with_validator(|input: &str| match validate_url(input) {
+                Ok(_) => Ok(Validation::Valid),
+                Err(e) => Ok(Validation::Invalid(e.into())),
             })
             .with_help_message("Your Tailscale Aperture IP or hostname")
             .prompt()
             .map_err(|e| anyhow::anyhow!("Failed to get URL: {}", e))
     }
 
-    fn prompt_provider_selection(
-        &self,
-        models: &[EnrichedModel],
-    ) -> anyhow::Result<Vec<String>> {
+    fn prompt_provider_selection(&self, models: &[EnrichedModel]) -> anyhow::Result<Vec<String>> {
         // Group by actual provider ID from Aperture (dynamic, no hardcoded plans)
         let mut providers: Vec<String> = models
             .iter()
@@ -154,7 +147,9 @@ impl ConfigWizard {
             providers.clone(),
         )
         .with_all_selected_by_default()
-        .with_help_message("All models from selected providers will be available through the router")
+        .with_help_message(
+            "All models from selected providers will be available through the router",
+        )
         .prompt()
         .map_err(|e| anyhow::anyhow!("Failed to select providers: {}", e))?;
 
@@ -267,7 +262,14 @@ impl ConfigWizard {
         println!("├──────────────────────────────────────────────────────────────┤");
         println!("│ Router: http://{}:{}", config.host, config.port);
         println!("│ Aperture: {}", config.aperture.base_url);
-        println!("│ API Key: {}", if config.aperture.api_key.is_some() { "configured" } else { "none" });
+        println!(
+            "│ API Key: {}",
+            if config.aperture.api_key.is_some() {
+                "configured"
+            } else {
+                "none"
+            }
+        );
         println!("│");
         println!("│ Providers (auto-discovered from Aperture):");
 
@@ -275,9 +277,7 @@ impl ConfigWizard {
             println!("│   {} ({} models)", provider.name, provider.models.len());
             for model in &provider.models {
                 let enriched = selected_models.iter().find(|m| m.id == *model);
-                let display = enriched
-                    .map(|m| m.display_name.as_str())
-                    .unwrap_or(model);
+                let display = enriched.map(|m| m.display_name.as_str()).unwrap_or(model);
                 println!("│     - {}", display);
             }
         }

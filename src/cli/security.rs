@@ -54,7 +54,10 @@ pub fn validate_url(url: &str) -> Result<Url, String> {
 
     // Only allow http/https schemes
     if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(format!("Invalid scheme '{}': only http and https are allowed", parsed.scheme()));
+        return Err(format!(
+            "Invalid scheme '{}': only http and https are allowed",
+            parsed.scheme()
+        ));
     }
 
     // Check for blocked hosts
@@ -180,8 +183,14 @@ mod tests {
 
     #[test]
     fn test_clean_url() {
-        assert_eq!(clean_url("  http://localhost:8080  ").unwrap(), "http://localhost:8080");
-        assert_eq!(clean_url(" http://100.100.100.100").unwrap(), "http://100.100.100.100");
+        assert_eq!(
+            clean_url("  http://localhost:8080  ").unwrap(),
+            "http://localhost:8080"
+        );
+        assert_eq!(
+            clean_url(" http://100.100.100.100").unwrap(),
+            "http://100.100.100.100"
+        );
     }
 
     #[test]
