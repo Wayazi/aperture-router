@@ -654,11 +654,13 @@ fn is_provider_internal_ip(host: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Check if a host is a metadata endpoint
+/// Check if a host is a metadata endpoint (exact match to prevent bypass via subdomains)
 fn is_provider_metadata_endpoint(host: &str) -> bool {
-    host.contains("169.254.169.254")
-        || host.contains("metadata.google.internal")
-        || host.contains("metadata.azure.com")
+    host == "169.254.169.254"
+        || host == "[::ffff:169.254.169.254]"
+        || host == "100.100.100.200"
+        || host == "metadata.google.internal"
+        || host == "metadata.azure.com"
 }
 
 #[cfg(test)]

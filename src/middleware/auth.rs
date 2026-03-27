@@ -26,6 +26,9 @@ fn hash_api_key(key: &str) -> String {
     format!("key_{:x}", hasher.finish())
 }
 
+/// Maximum number of tracked IPs to prevent memory exhaustion from unique-IP DDoS
+const MAX_TRACKED_IPS: usize = 10000;
+
 /// Authentication state with rate limiting
 /// Uses Zeroizing<String> to securely wipe API keys from memory on drop
 #[derive(Clone)]
@@ -83,10 +86,29 @@ impl AuthState {
     }
 
     /// Check rate limit and record failure atomically
+    /// Evicts oldest entries when MAX_TRACKED_IPS is exceeded to prevent memory exhaustion
     pub async fn check_and_record_failure(&self, client_ip: IpAddr) -> Result<(), StatusCode> {
         let mut attempts = self.failed_attempts.write().await;
 
         let now = Instant::now();
+
+        // Evict oldest entries if we've hit the IP tracking cap
+        if attempts.len() >= MAX_TRACKED_IPS && !attempts.contains_key(&client_ip) {
+            // Find and remove the IP with the oldest most-recent attempt
+            if let Some(oldest_ip) = attempts
+                .iter()
+                .filter_map(|(ip, times)| times.last().map(|t| (*ip, *t)))
+                .min_by_key(|(_, t)| *t)
+                .map(|(ip, _)| ip)
+            {
+                debug!(
+                    "Evicting oldest tracked IP {} to cap memory usage",
+                    oldest_ip
+                );
+                attempts.remove(&oldest_ip);
+            }
+        }
+
         let attempt_times = attempts.entry(client_ip).or_insert_with(Vec::new);
 
         // Remove old attempts outside the window
@@ -273,9 +295,10 @@ pub async fn admin_auth_middleware(
             error!("Admin endpoint accessed but no admin API keys configured");
             return Err(StatusCode::UNAUTHORIZED);
         }
-        // In dev mode, allow access for testing
-        if cfg!(debug_assertions) {
-            tracing::warn!("Admin endpoint accessed in dev mode without admin keys configured");
+        // In dev mode, allow access only with explicit opt-in via env var
+        if cfg!(debug_assertions) && std::env::var("APERTURE_ALLOW_DEV_ADMIN").as_deref() == Ok("1")
+        {
+            tracing::warn!("Admin endpoint accessed in dev mode without admin keys (APERTURE_ALLOW_DEV_ADMIN=1)");
             return Ok(next.run(request).await);
         }
         return Err(StatusCode::UNAUTHORIZED);

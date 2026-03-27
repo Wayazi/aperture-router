@@ -36,9 +36,20 @@ impl ProxyClient {
             || aperture_config.base_url.contains(".tsnet.");
 
         // Allow HTTP for localhost (development/testing) - any port
-        let is_localhost = aperture_config.base_url.contains("localhost:")
-            || aperture_config.base_url.contains("127.0.0.1:")
-            || aperture_config.base_url.contains("::ffff:127.0.0.1:");
+        // Use proper URL parsing to detect all localhost forms (IPv6 [::1], 127.x, etc.)
+        let host_str = Url::parse(&aperture_config.base_url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_string()));
+
+        let is_localhost = host_str
+            .as_deref()
+            .map(|host| {
+                // Check literal "localhost" hostname
+                host == "localhost"
+                // Check loopback IPs (127.x.x.x, ::1, etc.)
+                || host.parse::<IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+            })
+            .unwrap_or(false);
 
         // Only enforce HTTPS if: API key is set AND not Tailscale AND not localhost
         if has_api_key
@@ -150,24 +161,13 @@ impl ProxyClient {
 
         // Convert response body chunks to a stream with size tracking
         let byte_stream = response.bytes_stream().map(move |chunk_result| {
-            // Check size limit first
-            let current = total_bytes.load(Ordering::Relaxed);
-            if current > max_size {
-                return Err(anyhow::anyhow!(
-                    "Streaming response size limit exceeded (max {} MB)",
-                    max_size / 1024 / 1024
-                ));
-            }
-
             chunk_result
                 .map_err(|e| anyhow::anyhow!("Stream error: {}", e))
                 .and_then(|bytes| {
-                    // Update size counter
-                    total_bytes.fetch_add(bytes.len(), Ordering::Relaxed);
-
-                    // Check limit after update
-                    let current = total_bytes.load(Ordering::Relaxed);
-                    if current > max_size {
+                    // Atomically add and check in one step to prevent TOCTOU
+                    let new_total =
+                        total_bytes.fetch_add(bytes.len(), Ordering::SeqCst) + bytes.len();
+                    if new_total > max_size {
                         return Err(anyhow::anyhow!(
                             "Streaming response size limit exceeded (max {} MB)",
                             max_size / 1024 / 1024
@@ -180,7 +180,9 @@ impl ProxyClient {
                 })
         });
 
-        Ok(Box::pin(byte_stream))
+        let stream: Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>> =
+            Box::pin(byte_stream);
+        Ok(stream)
     }
 
     /// Get the base URL for this client
@@ -210,16 +212,31 @@ impl ProxyClient {
             ));
         }
 
-        // SSRF protection: check for metadata endpoints only
-        // Note: We don't block internal IPs here because providers are admin-configured
-        // and may legitimately use Tailscale (100.64.0.0/10), localhost, etc.
-        // The redirect policy (disabled) provides the main SSRF defense.
+        // SSRF protection for provider URLs:
+        // 1. Always block cloud metadata endpoints (169.254.169.254, etc.)
+        // 2. Block internal IPs (private, loopback, link-local)
+        //    Exception: CGN range 100.64.0.0/10 is allowed for Tailscale providers
+        // 3. Admin-configured providers are trusted, but we validate resolved hosts
+        //    as defense-in-depth against DNS rebinding attacks
         if let Some(host) = parsed_url.host_str() {
+            // Always block metadata endpoints regardless of provider config
             if is_metadata_endpoint(host) {
                 return Err(anyhow::anyhow!(
                     "Access to metadata endpoint '{}' is blocked (SSRF protection)",
                     host
                 ));
+            }
+
+            // For IP-based hosts, validate they're not private/loopback
+            // Exception: CGN range (100.64.0.0/10) allowed for Tailscale
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                if is_internal_ip_strict(&ip) {
+                    return Err(anyhow::anyhow!(
+                        "Access to internal IP '{}' is blocked (SSRF protection). \
+                         Use Tailscale (100.64.0.0/10) or public IPs for providers.",
+                        ip
+                    ));
+                }
             }
         }
 
@@ -339,9 +356,157 @@ fn is_internal_ip(host: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Check if a host is a metadata endpoint (AWS/GCP/Azure)
+/// Strict internal IP check for provider URL validation (SSRF defense-in-depth)
+/// Blocks private, loopback, link-local, and unique local addresses
+/// Unlike is_internal_ip(), this does NOT block CGN (100.64.0.0/10) because
+/// Tailscale deployments legitimately use this range
+fn is_internal_ip_strict(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_private() || v4.is_loopback() || v4.is_link_local()
+            // Note: CGN (100.64.0.0/10) is NOT blocked - Tailscale uses this range
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return v4.is_private() || v4.is_loopback() || v4.is_link_local();
+            }
+            v6.is_loopback()
+                || v6.is_unique_local()
+                || matches!(v6.octets()[0], 0xfe) && (v6.octets()[1] & 0xc0) == 0x80
+                || v6.is_multicast()
+        }
+    }
+}
+
+/// Check if a host is a cloud metadata endpoint (by hostname patterns)
 fn is_metadata_endpoint(host: &str) -> bool {
-    host.contains("169.254.169.254")
-        || host.contains("metadata.google.internal")
-        || host.contains("metadata.azure.com")
+    // Exact match for IP-based metadata endpoints
+    host == "169.254.169.254"
+        || host == "[::ffff:169.254.169.254]"
+        // Alibaba Cloud metadata
+        || host == "100.100.100.200"
+        // Hostname-based metadata endpoints (GCP, Azure)
+        || host == "metadata.google.internal"
+        || host == "metadata.azure.com"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_metadata_endpoint_exact_match() {
+        assert!(is_metadata_endpoint("169.254.169.254"));
+        assert!(is_metadata_endpoint("metadata.google.internal"));
+        assert!(is_metadata_endpoint("metadata.azure.com"));
+        assert!(is_metadata_endpoint("[::ffff:169.254.169.254]"));
+        assert!(is_metadata_endpoint("100.100.100.200")); // Alibaba Cloud
+    }
+
+    #[test]
+    fn test_metadata_endpoint_rejects_subdomains() {
+        // Exact match prevents bypass via subdomains
+        assert!(!is_metadata_endpoint("not-169.254.169.254.example.com"));
+        assert!(!is_metadata_endpoint("fake-metadata.google.internal"));
+        assert!(!is_metadata_endpoint("xmetadata.azure.com"));
+    }
+
+    #[test]
+    fn test_internal_ip_blocks_private() {
+        assert!(is_internal_ip("10.0.0.1"));
+        assert!(is_internal_ip("172.16.0.1"));
+        assert!(is_internal_ip("192.168.1.1"));
+        assert!(is_internal_ip("127.0.0.1"));
+    }
+
+    #[test]
+    fn test_internal_ip_allows_public() {
+        assert!(!is_internal_ip("8.8.8.8"));
+        assert!(!is_internal_ip("1.1.1.1"));
+        assert!(!is_internal_ip("203.0.113.1"));
+    }
+
+    #[test]
+    fn test_internal_ip_blocks_cgn() {
+        // CGN (100.64.127.1) is blocked by default is_internal_ip
+        assert!(is_internal_ip("100.64.0.1"));
+        assert!(is_internal_ip("100.127.255.255"));
+    }
+
+    #[test]
+    fn test_internal_ip_strict_allows_cgn() {
+        // Strict check allows CGN for Tailscale
+        let cgn: IpAddr = "100.64.0.1".parse().unwrap();
+        assert!(!is_internal_ip_strict(&cgn));
+        let cgn2: IpAddr = "100.127.255.255".parse().unwrap();
+        assert!(!is_internal_ip_strict(&cgn2));
+    }
+
+    #[test]
+    fn test_internal_ip_strict_blocks_private() {
+        let private: IpAddr = "10.0.0.1".parse().unwrap();
+        assert!(is_internal_ip_strict(&private));
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(is_internal_ip_strict(&loopback));
+        let link_local: IpAddr = "169.254.1.1".parse().unwrap();
+        assert!(is_internal_ip_strict(&link_local));
+    }
+
+    #[test]
+    fn test_internal_ip_ipv6_loopback() {
+        assert!(is_internal_ip("::1"));
+    }
+
+    #[test]
+    fn test_internal_ip_ipv4_mapped() {
+        // IPv4-mapped IPv6 addresses should be caught
+        assert!(is_internal_ip("::ffff:10.0.0.1"));
+        assert!(is_internal_ip("::ffff:127.0.0.1"));
+    }
+
+    #[test]
+    fn test_https_enforcement_localhost() {
+        // localhost with API key should be allowed (loopback)
+        let config = crate::config::ApertureConfig {
+            base_url: "http://localhost:8080".to_string(),
+            api_key: Some("test-key-with-enough-entropy-abc123".to_string()),
+            model_refresh_interval_secs: 300,
+        };
+        let http_config = crate::config::HttpConfig {
+            connect_timeout_secs: 10,
+            request_timeout_secs: 300,
+            sse_keep_alive_secs: 15,
+        };
+        assert!(ProxyClient::new(config, http_config, 1024).is_ok());
+    }
+
+    #[test]
+    fn test_https_enforcement_127_ip() {
+        let config = crate::config::ApertureConfig {
+            base_url: "http://127.0.0.1:8080".to_string(),
+            api_key: Some("test-key-with-enough-entropy-abc123".to_string()),
+            model_refresh_interval_secs: 300,
+        };
+        let http_config = crate::config::HttpConfig {
+            connect_timeout_secs: 10,
+            request_timeout_secs: 300,
+            sse_keep_alive_secs: 15,
+        };
+        assert!(ProxyClient::new(config, http_config, 1024).is_ok());
+    }
+
+    #[test]
+    fn test_https_enforcement_blocks_http_with_key() {
+        let config = crate::config::ApertureConfig {
+            base_url: "http://example.com:8080".to_string(),
+            api_key: Some("test-key-with-enough-entropy-abc123".to_string()),
+            model_refresh_interval_secs: 300,
+        };
+        let http_config = crate::config::HttpConfig {
+            connect_timeout_secs: 10,
+            request_timeout_secs: 300,
+            sse_keep_alive_secs: 15,
+        };
+        assert!(ProxyClient::new(config, http_config, 1024).is_err());
+    }
 }

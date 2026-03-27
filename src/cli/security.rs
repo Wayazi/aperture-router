@@ -78,10 +78,12 @@ pub fn clean_url(url: &str) -> Result<String, String> {
 
 /// Check if a host is blocked (metadata endpoints, etc.)
 fn is_blocked_host(host: &str) -> bool {
-    // Block cloud metadata endpoints
-    host.contains("169.254.169.254")
-        || host.contains("metadata.google.internal")
-        || host.contains("metadata.azure.com")
+    // Block cloud metadata endpoints (exact match to prevent bypass via subdomains)
+    host == "169.254.169.254"
+        || host == "[::ffff:169.254.169.254]"
+        || host == "100.100.100.200"
+        || host == "metadata.google.internal"
+        || host == "metadata.azure.com"
         // Block Kubernetes service DNS
         || host.ends_with(".internal")
         && host.starts_with("metadata")
