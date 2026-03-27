@@ -550,7 +550,10 @@ impl Config {
                 return Err(format!("Provider {} has empty base_url", provider.name));
             }
             if provider.models.is_empty() {
-                return Err(format!("Provider {} has no models configured", provider.name));
+                return Err(format!(
+                    "Provider {} has no models configured",
+                    provider.name
+                ));
             }
 
             // Validate base_url scheme (only http/https allowed)
@@ -614,12 +617,11 @@ impl Config {
         }
 
         // Rename temp to final (atomic on Unix)
-        std::fs::rename(&temp_path, path)
-            .map_err(|e| {
-                // Clean up temp file on failure
-                let _ = std::fs::remove_file(&temp_path);
-                anyhow::anyhow!("Failed to rename config file: {}", e)
-            })?;
+        std::fs::rename(&temp_path, path).map_err(|e| {
+            // Clean up temp file on failure
+            let _ = std::fs::remove_file(&temp_path);
+            anyhow::anyhow!("Failed to rename config file: {}", e)
+        })?;
 
         tracing::info!("Configuration saved to {}", path);
         Ok(())
@@ -640,15 +642,13 @@ fn is_provider_internal_ip(host: &str) -> bool {
             std::net::IpAddr::V6(v6) => {
                 // Check for IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
                 if let Some(v4) = v6.to_ipv4_mapped() {
-                    return v4.is_private()
-                        || v4.is_loopback()
-                        || v4.is_link_local();
+                    return v4.is_private() || v4.is_loopback() || v4.is_link_local();
                 }
 
                 v6.is_loopback()
-                || v6.is_unique_local()
-                || matches!(v6.octets()[0], 0xfe) && (v6.octets()[1] & 0xc0) == 0x80
-                || v6.is_multicast()
+                    || v6.is_unique_local()
+                    || matches!(v6.octets()[0], 0xfe) && (v6.octets()[1] & 0xc0) == 0x80
+                    || v6.is_multicast()
             }
         })
         .unwrap_or(false)

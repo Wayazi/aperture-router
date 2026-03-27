@@ -249,12 +249,9 @@ mod route_tests {
 
     fn create_test_config_with_admin_keys() -> Config {
         let mut config = Config::default();
-        config.security.admin_api_keys = vec![
-            "admin-key-with-sufficient-entropy-1234567890".to_string(),
-        ];
-        config.security.api_keys = vec![
-            "regular-key-with-sufficient-entropy-12345678".to_string(),
-        ];
+        config.security.admin_api_keys =
+            vec!["admin-key-with-sufficient-entropy-1234567890".to_string()];
+        config.security.api_keys = vec!["regular-key-with-sufficient-entropy-12345678".to_string()];
         config
     }
 
@@ -267,7 +264,10 @@ mod route_tests {
         let request = Request::builder()
             .uri("/admin/stats")
             .method(Method::GET)
-            .header("Authorization", "Bearer admin-key-with-sufficient-entropy-1234567890")
+            .header(
+                "Authorization",
+                "Bearer admin-key-with-sufficient-entropy-1234567890",
+            )
             .body(Body::empty())
             .unwrap();
 
@@ -366,7 +366,10 @@ mod route_tests {
         let request = Request::builder()
             .uri("/admin/refresh-models")
             .method(Method::POST)
-            .header("Authorization", "Bearer admin-key-with-sufficient-entropy-1234567890")
+            .header(
+                "Authorization",
+                "Bearer admin-key-with-sufficient-entropy-1234567890",
+            )
             .body(Body::empty())
             .unwrap();
 

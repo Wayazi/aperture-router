@@ -320,7 +320,8 @@ mod type_tests {
             }
         "#;
 
-        let request: ChatCompletionRequest = serde_json::from_str(json).expect("Failed to deserialize");
+        let request: ChatCompletionRequest =
+            serde_json::from_str(json).expect("Failed to deserialize");
         assert!(request.messages[0].tool_calls.is_some());
     }
 }
