@@ -96,11 +96,15 @@ enum ConfigCommands {
         #[arg(long)]
         opencode: bool,
 
+        /// Export as openclaw.json format (for LoongClaw/OpenClaw)
+        #[arg(long)]
+        openclaw: bool,
+
         /// Output file path
         #[arg(short, long)]
         output: Option<String>,
 
-        /// Router URL for OpenCode export
+        /// Router URL for export formats
         #[arg(long, default_value = "http://127.0.0.1:8765")]
         router_url: String,
     },
@@ -259,10 +263,12 @@ async fn handle_config_command(cmd: ConfigCommands, config_path: &str) -> anyhow
         ConfigCommands::Export {
             toml,
             opencode,
+            openclaw,
             output,
             router_url,
         } => {
-            commands::export_config(config_path, toml, opencode, output, &router_url).await?;
+            commands::export_config(config_path, toml, opencode, openclaw, output, &router_url)
+                .await?;
         }
         ConfigCommands::Validate => {
             commands::validate_config(config_path)?;

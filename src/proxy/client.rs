@@ -103,10 +103,10 @@ impl ProxyClient {
         // Return error for non-success status codes
         if !response.status().is_success() {
             let status = response.status();
-            error!("Upstream request failed with status: {}", status);
+            error!("Upstream request to {} failed with status: {}", endpoint, status);
+            // Log detailed error internally, return generic error to client
             return Err(anyhow::anyhow!(
-                "Upstream service returned error: {}",
-                status.as_u16()
+                "Service temporarily unavailable"
             ));
         }
 
@@ -140,13 +140,10 @@ impl ProxyClient {
         // Check for non-success status codes
         if !response.status().is_success() {
             let status = response.status();
-            let status_code = status.as_u16();
-            error!("Upstream streaming request failed with status: {}", status);
+            error!("Upstream streaming request to {} failed with status: {}", endpoint, status);
+            // Return generic error to client (detailed error logged internally)
             return Ok(Box::pin(stream::once(async move {
-                Err(anyhow::anyhow!(
-                    "Upstream service returned error: {}",
-                    status_code
-                ))
+                Err(anyhow::anyhow!("Service temporarily unavailable"))
             })));
         }
 
@@ -164,14 +161,31 @@ impl ProxyClient {
             chunk_result
                 .map_err(|e| anyhow::anyhow!("Stream error: {}", e))
                 .and_then(|bytes| {
-                    // Atomically add and check in one step to prevent TOCTOU
-                    let new_total =
-                        total_bytes.fetch_add(bytes.len(), Ordering::SeqCst) + bytes.len();
-                    if new_total > max_size {
-                        return Err(anyhow::anyhow!(
-                            "Streaming response size limit exceeded (max {} MB)",
-                            max_size / 1024 / 1024
-                        ));
+                    // Use compare_exchange loop to prevent TOCTOU race condition
+                    // This ensures we check the limit BEFORE adding, not after
+                    let chunk_size = bytes.len();
+                    loop {
+                        let current = total_bytes.load(Ordering::SeqCst);
+                        
+                        // Check if adding this chunk would exceed the limit
+                        if current + chunk_size > max_size {
+                            return Err(anyhow::anyhow!(
+                                "Streaming response size limit exceeded (max {} MB, current {})",
+                                max_size / 1024 / 1024,
+                                current / 1024 / 1024
+                            ));
+                        }
+                        
+                        // Try to atomically update the counter
+                        match total_bytes.compare_exchange(
+                            current,
+                            current + chunk_size,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        ) {
+                            Ok(_) => break, // Successfully updated
+                            Err(_) => continue, // Another thread updated, retry
+                        }
                     }
 
                     std::str::from_utf8(&bytes)
@@ -258,9 +272,9 @@ impl ProxyClient {
         if !response.status().is_success() {
             let status = response.status();
             error!("Upstream request to {} failed with status: {}", url, status);
+            // Log detailed error internally, return generic error to client
             return Err(anyhow::anyhow!(
-                "Upstream service returned error: {}",
-                status.as_u16()
+                "Service temporarily unavailable"
             ));
         }
 
