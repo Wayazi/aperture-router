@@ -3,14 +3,33 @@
 
 /// Validates model name
 pub fn validate_model_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Model name cannot be empty".to_string());
+    }
+
     if name.len() > 128 {
-        Err(format!(
+        return Err(format!(
             "Model name too long ({} chars, max 128)",
             name.len()
-        ))
-    } else {
-        Ok(())
+        ));
     }
+
+    // Block path traversal attempts
+    if name.contains("..") {
+        return Err("Model name cannot contain '..'".to_string());
+    }
+
+    // Allow ASCII alphanumeric, hyphens, underscores, dots, and forward slashes
+    // This covers common model naming patterns like "gpt-4", "claude-3-opus", "provider/model"
+    // Using is_ascii_alphanumeric() to reject unicode characters
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/')
+    {
+        return Err("Model name contains invalid characters. Only ASCII alphanumeric, '-', '_', '.', and '/' are allowed".to_string());
+    }
+
+    Ok(())
 }
 
 /// Validates role string for Anthropic API

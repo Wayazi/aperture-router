@@ -8,9 +8,8 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use std::collections::hash_map::DefaultHasher;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,10 +19,14 @@ use tracing::{debug, error, info, warn};
 use zeroize::Zeroizing;
 
 /// Helper to hash an API key for logging (without exposing the actual key)
+/// Uses SHA-256 for cryptographic security (prevents rainbow table attacks)
 fn hash_api_key(key: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    key.hash(&mut hasher);
-    format!("key_{:x}", hasher.finish())
+    let mut hasher = Sha256::new();
+    hasher.update(key.as_bytes());
+    let result = hasher.finalize();
+    // Only log first 8 bytes (16 hex chars) for brevity
+    let truncated: [u8; 8] = result[..8].try_into().unwrap_or([0u8; 8]);
+    format!("key_{:02x?}", truncated)
 }
 
 /// Maximum number of tracked IPs to prevent memory exhaustion from unique-IP DDoS
@@ -285,22 +288,26 @@ pub async fn auth_middleware(
 /// Admin-specific authentication middleware
 /// Requires admin API key for access to administrative endpoints
 pub async fn admin_auth_middleware(
-    State((config, auth)): State<(Arc<Config>, Arc<AuthState>)>,
+    State((_config, auth)): State<(Arc<Config>, Arc<AuthState>)>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     // Admin endpoints require explicit admin API key configuration
     if !auth.is_admin_enabled() {
-        if config.security.require_auth_in_prod && !cfg!(debug_assertions) {
+        // In production, always require admin keys
+        #[cfg(not(debug_assertions))]
+        {
             error!("Admin endpoint accessed but no admin API keys configured");
             return Err(StatusCode::UNAUTHORIZED);
         }
+        
         // In dev mode, allow access only with explicit opt-in via env var
-        if cfg!(debug_assertions) && std::env::var("APERTURE_ALLOW_DEV_ADMIN").as_deref() == Ok("1")
-        {
+        #[cfg(debug_assertions)]
+        if std::env::var("APERTURE_ALLOW_DEV_ADMIN").as_deref() == Ok("1") {
             tracing::warn!("Admin endpoint accessed in dev mode without admin keys (APERTURE_ALLOW_DEV_ADMIN=1)");
             return Ok(next.run(request).await);
         }
+        
         return Err(StatusCode::UNAUTHORIZED);
     }
 
