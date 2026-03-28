@@ -380,8 +380,10 @@ mod config_save_tests {
 
     #[test]
     fn test_config_save_overwrites_existing() {
-        let mut config = Config::default();
-        config.port = 8080;
+        let mut config = Config {
+            port: 8080,
+            ..Default::default()
+        };
 
         let temp_file = NamedTempFile::new().expect("Failed to create temp file");
         let path = temp_file.path().to_str().unwrap().to_string();

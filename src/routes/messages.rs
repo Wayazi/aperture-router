@@ -6,7 +6,7 @@ use http::StatusCode;
 use tracing::{debug, warn};
 
 use crate::{
-    routes::proxy::{proxy_handler_multi, HasModel},
+    routes::{proxy::{proxy_handler_multi, HasModel}, validate_model_or_error},
     server::AppState,
     types::anthropic::MessageRequest,
 };
@@ -22,6 +22,11 @@ pub async fn anthropic_messages(
     State(state): State<AppState>,
     Json(request): Json<MessageRequest>,
 ) -> impl axum::response::IntoResponse {
+    // Validate model name format first
+    if let Err(response) = validate_model_or_error(&request) {
+        return *response;
+    }
+    
     // Skip model validation when multi-provider is disabled (all models go to Aperture)
     if state.config.multi_provider_enabled {
         // Validate model exists (check both discovery and provider registry)

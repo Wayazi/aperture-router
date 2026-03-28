@@ -194,7 +194,7 @@ mod proxy_tests {
 
         assert!(result.is_err(), "Server error should return error");
         let error_msg = result.unwrap_err().to_string();
-        assert!(error_msg.contains("Upstream service returned error"));
+        assert!(error_msg.contains("Service temporarily unavailable"));
     }
 
     #[tokio::test]
@@ -320,7 +320,7 @@ mod proxy_tests {
 
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
-        assert!(error_msg.contains("Upstream service returned error"));
+        assert!(error_msg.contains("Service temporarily unavailable"));
     }
 
     #[tokio::test]

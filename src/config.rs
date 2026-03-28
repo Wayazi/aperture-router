@@ -504,6 +504,23 @@ impl Config {
             return Err("Ban duration cannot be 0 seconds".to_string());
         }
 
+        // Validate CORS configuration
+        if self.cors.allowed_origins.contains(&"*".to_string()) {
+            tracing::warn!(
+                "CORS wildcard (*) detected. This allows any origin to access the API. \
+                 Consider using explicit origins in production. \
+                 Note: Credentials mode will not work with wildcard in browsers."
+            );
+        }
+
+        // Check for empty CORS origins
+        if self.cors.allowed_origins.is_empty() {
+            tracing::warn!(
+                "No CORS origins configured. Defaulting to localhost:3000. \
+                 Consider configuring explicit origins for production."
+            );
+        }
+
         // Validate body size limit
         if self.security.max_body_size_bytes == 0 {
             return Err("Max body size cannot be 0".to_string());

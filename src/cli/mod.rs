@@ -10,6 +10,7 @@
 
 pub mod commands;
 pub mod model_fetcher;
+pub mod openclaw_export;
 pub mod opencode_export;
 pub mod security;
 

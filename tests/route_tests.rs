@@ -421,11 +421,8 @@ mod route_tests {
             .unwrap();
 
         let response = app.oneshot(request).await.unwrap();
-        // In debug mode (when tests run), this returns 200 OK for testing
-        // In production with require_auth_in_prod=true, this would return 401
-        #[cfg(debug_assertions)]
-        assert_eq!(response.status(), StatusCode::OK);
-        #[cfg(not(debug_assertions))]
+        // When no admin keys configured, admin endpoints return 401
+        // (unless APERTURE_ALLOW_DEV_ADMIN=1 is set in dev mode)
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

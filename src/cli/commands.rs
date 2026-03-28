@@ -12,13 +12,14 @@
 //! - validate: Validate config
 
 use super::model_fetcher::{fetch_models, group_by_provider};
+use super::openclaw_export::OpenClawConfig;
 use super::opencode_export::OpenCodeConfig;
 use super::security::safe_config_summary;
 #[cfg(feature = "wizard")]
 use super::wizard::ConfigWizard;
 use crate::config::Config;
 
-#[cfg(all(unix, feature = "wizard"))]
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 /// Run the interactive configuration wizard
@@ -41,12 +42,12 @@ pub async fn run_wizard(
             .map(|p| p.join("opencode").join("opencode.json"))
             .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
 
-        // Read existing config and merge
-        let merged_json = if opencode_path.exists() {
-            let existing = std::fs::read_to_string(&opencode_path)?;
-            opencode.merge_with_existing(&existing)?
-        } else {
-            opencode.to_json()?
+        let opencode_path_str = opencode_path.to_string_lossy().to_string();
+
+        // Safe read: no TOCTOU, no symlink following
+        let merged_json = match safe_read_existing_file(&opencode_path_str)? {
+            Some(existing) => opencode.merge_with_existing(&existing)?,
+            None => opencode.to_json()?,
         };
 
         std::fs::write(&opencode_path, merged_json)?;
@@ -192,22 +193,55 @@ pub fn toggle_provider(config_path: &str, provider_name: &str, enable: bool) -> 
     Ok(())
 }
 
+/// Safely read a file, avoiding symlink attacks
+///
+/// Returns None if file doesn't exist, or error if it's a symlink or read fails
+fn safe_read_existing_file(path: &str) -> anyhow::Result<Option<String>> {
+    let path = std::path::Path::new(path);
+
+    // Try to get metadata without following symlinks
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            // Refuse to follow symlinks for security
+            if metadata.file_type().is_symlink() {
+                return Err(anyhow::anyhow!(
+                    "Refusing to follow symlink: {}",
+                    path.display()
+                ));
+            }
+            // File exists and is regular, read it
+            Ok(Some(std::fs::read_to_string(path)?))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // File doesn't exist - this is fine
+            Ok(None)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Export configuration
 pub async fn export_config(
     config_path: &str,
     toml_format: bool,
     opencode_format: bool,
+    openclaw_format: bool,
     output_path: Option<String>,
     router_url: &str,
 ) -> anyhow::Result<()> {
+    // Warn if both formats specified with same output
+    if opencode_format && openclaw_format && output_path.is_some() {
+        eprintln!("Warning: --opencode and --openclaw with -o will overwrite. Each format writes to its own default file.");
+    }
+
     let config = Config::load(config_path)?;
 
-    if toml_format || !opencode_format {
+    if toml_format || (!opencode_format && !openclaw_format) {
         let path = output_path
             .clone()
             .unwrap_or_else(|| "config.toml".to_string());
         config.save(&path)?;
-        println!("✓ Config exported to {}", path);
+        println!("Config exported to {}", path);
     }
 
     if opencode_format {
@@ -215,13 +249,49 @@ pub async fn export_config(
         let models = fetch_models(&config.aperture.base_url).await?;
 
         let opencode = OpenCodeConfig::from_router_config(&config, &models, router_url);
-        let json = opencode.to_json()?;
 
         let path = output_path
             .clone()
             .unwrap_or_else(|| "opencode.json".to_string());
+
+        // Safe read: no TOCTOU, no symlink following
+        let json = match safe_read_existing_file(&path)? {
+            Some(existing) => opencode.merge_with_existing(&existing)?,
+            None => opencode.to_json()?,
+        };
+
         std::fs::write(&path, json)?;
-        println!("✓ OpenCode config exported to {}", path);
+
+        // Set restrictive permissions for security (API keys in config)
+        #[cfg(unix)]
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+
+        println!("OpenCode config exported to {}", path);
+    }
+
+    if openclaw_format {
+        // Fetch models to get metadata
+        let models = fetch_models(&config.aperture.base_url).await?;
+
+        let openclaw = OpenClawConfig::from_router_config(&config, &models, router_url);
+
+        let path = output_path
+            .clone()
+            .unwrap_or_else(|| "openclaw.json".to_string());
+
+        // Safe read: no TOCTOU, no symlink following
+        let json = match safe_read_existing_file(&path)? {
+            Some(existing) => openclaw.merge_with_existing(&existing)?,
+            None => openclaw.to_json()?,
+        };
+
+        std::fs::write(&path, json)?;
+
+        // Set restrictive permissions for security (future API keys in config)
+        #[cfg(unix)]
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+
+        println!("OpenClaw config exported to {}", path);
     }
 
     Ok(())
@@ -271,9 +341,9 @@ pub fn generate_config(
     if generate_key {
         let api_key = generate_api_key();
         config.security.api_keys = vec![api_key.clone()];
-        println!("🔑 Generated API key: {}", api_key);
-        println!("   Save this key securely - it won't be shown again!");
-        println!();
+        eprintln!("🔑 Generated API key: {}", api_key);
+        eprintln!("   Save this key securely - it won't be shown again!");
+        eprintln!();
     }
 
     // Get API key from environment if set

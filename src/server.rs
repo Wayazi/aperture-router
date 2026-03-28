@@ -2,6 +2,9 @@
 // Copyright (c) 2026 aperture-router contributors
 
 use axum::{
+    extract::Request,
+    middleware::Next,
+    response::Response,
     routing::{get, post},
     Router,
 };
@@ -12,11 +15,40 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing::info;
+use uuid::Uuid;
 
 use crate::{
     config::Config, discovery::models::ModelDiscovery, middleware::AuthState,
     proxy::client::ProxyClient, ProviderRegistry,
 };
+
+/// Middleware to add request ID for tracing
+async fn add_request_id(request: Request, next: Next) -> Response {
+    let request_id = Uuid::new_v4();
+    
+    // Add request ID to tracing span
+    let span = tracing::info_span!(
+        "request",
+        request_id = %request_id,
+        method = %request.method(),
+        path = %request.uri().path(),
+    );
+    
+    // Log request start
+    info!(parent: &span, "Request started");
+    
+    // Run the request in the span
+    let response = next.run(request).await;
+    
+    // Log request completion
+    info!(
+        parent: &span,
+        status = %response.status(),
+        "Request completed"
+    );
+    
+    response
+}
 
 /// Application state shared across all routes
 #[derive(Clone)]
@@ -213,6 +245,7 @@ pub fn create_router(
         .route("/health", get(crate::routes::health::health))
         .merge(admin_routes)
         .merge(protected_routes)
+        .layer(axum::middleware::from_fn(add_request_id))
         .layer(TraceLayer::new_for_http())
         .layer(SetResponseHeaderLayer::overriding(
             axum::http::header::CONTENT_SECURITY_POLICY,
