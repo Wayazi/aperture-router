@@ -324,58 +324,49 @@ impl ProxyClient {
     }
 }
 
-/// Check if an IP address is internal/private
+/// Core internal IP check shared between both variants
+/// Returns true if the IP is private, loopback, link-local, or (if block_cgn) CGN range
+fn is_internal_ip_impl(ip: &IpAddr, block_cgn: bool) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let mut blocked = v4.is_private() || v4.is_loopback() || v4.is_link_local();
+            if block_cgn {
+                // Block shared/carrier-grade NAT (100.64.0.0/10) - used by some networks
+                blocked |= v4.octets()[0] == 100 && (64..=127).contains(&v4.octets()[1]);
+            }
+            blocked
+        }
+        IpAddr::V6(v6) => {
+            // Check for IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
+            // These can encode internal IPv4 addresses and bypass checks
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_internal_ip_impl(&IpAddr::V4(v4), block_cgn);
+            }
+
+            // Block loopback (::1)
+            v6.is_loopback()
+            // Block unique local addresses (fc00::/7)
+            || v6.is_unique_local()
+            // Block link-local (fe80::/10)
+            || matches!(v6.octets()[0], 0xfe) && (v6.octets()[1] & 0xc0) == 0x80
+            // Block multicast (ff00::/8)
+            || v6.is_multicast()
+        }
+    }
+}
+
+/// Check if an IP address is internal/private (blocks CGN range)
 fn is_internal_ip(host: &str) -> bool {
     host.parse::<IpAddr>()
-        .map(|ip| match ip {
-            IpAddr::V4(v4) => {
-                v4.is_private() || v4.is_loopback() || v4.is_link_local()
-                // Also block shared/carrier-grade NAT (100.64.0.0/10)
-                || v4.octets()[0] == 100 && (64..=127).contains(&v4.octets()[1])
-            }
-            IpAddr::V6(v6) => {
-                // Check for IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
-                // These can encode internal IPv4 addresses and bypass checks
-                if let Some(v4) = v6.to_ipv4_mapped() {
-                    return v4.is_private()
-                        || v4.is_loopback()
-                        || v4.is_link_local()
-                        || v4.octets()[0] == 100 && (64..=127).contains(&v4.octets()[1]);
-                }
-
-                // Block loopback (::1)
-                v6.is_loopback()
-                // Block unique local addresses (fc00::/7)
-                || v6.is_unique_local()
-                // Block link-local (fe80::/10)
-                || matches!(v6.octets()[0], 0xfe) && (v6.octets()[1] & 0xc0) == 0x80
-                // Block multicast (ff00::/8)
-                || v6.is_multicast()
-            }
-        })
+        .map(|ip| is_internal_ip_impl(&ip, true))
         .unwrap_or(false)
 }
 
 /// Strict internal IP check for provider URL validation (SSRF defense-in-depth)
-/// Blocks private, loopback, link-local, and unique local addresses
 /// Unlike is_internal_ip(), this does NOT block CGN (100.64.0.0/10) because
 /// Tailscale deployments legitimately use this range
 fn is_internal_ip_strict(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_private() || v4.is_loopback() || v4.is_link_local()
-            // Note: CGN (100.64.0.0/10) is NOT blocked - Tailscale uses this range
-        }
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return v4.is_private() || v4.is_loopback() || v4.is_link_local();
-            }
-            v6.is_loopback()
-                || v6.is_unique_local()
-                || matches!(v6.octets()[0], 0xfe) && (v6.octets()[1] & 0xc0) == 0x80
-                || v6.is_multicast()
-        }
-    }
+    is_internal_ip_impl(ip, false)
 }
 
 /// Check if a host is a cloud metadata endpoint (by hostname patterns)

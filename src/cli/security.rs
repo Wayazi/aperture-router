@@ -105,10 +105,10 @@ pub fn validate_api_key(key: &str) -> Result<(), String> {
         return Err("API key contains placeholder value".to_string());
     }
 
-    // Check minimum length
-    if key.len() < 16 {
+    // Check minimum length (must match config validation: 32 characters)
+    if key.len() < 32 {
         return Err(format!(
-            "API key too short: {} characters (minimum 16)",
+            "API key too short: {} characters (minimum 32)",
             key.len()
         ));
     }
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_validate_api_key_valid() {
-        assert!(validate_api_key("my-super-secret-api-key-12345").is_ok());
+        assert!(validate_api_key("my-super-secret-api-key-12345678").is_ok());
     }
 
     #[test]
