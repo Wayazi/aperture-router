@@ -68,3 +68,19 @@ pre_remove() {
     systemctl disable aperture-router
   fi
 }
+
+post_remove() {
+  cat <<EOF
+
+==> aperture-router removed
+
+Config files preserved in /etc/aperture-router/
+Environment file preserved at /etc/sysconfig/aperture-router
+
+To fully remove all traces:
+  $ sudo rm -rf /etc/aperture-router
+  $ sudo rm -f /etc/sysconfig/aperture-router
+  $ sudo rm -rf /var/lib/aperture-router
+
+EOF
+}
