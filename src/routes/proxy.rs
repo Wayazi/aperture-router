@@ -151,10 +151,11 @@ where
             {
                 Ok(response) => process_upstream_response(response).await,
                 Err(e) => {
+                    // Log provider details internally, return generic error to client
                     error!("Proxy error for provider '{}': {}", provider.name, e);
                     json_error(
                         StatusCode::BAD_GATEWAY,
-                        &format!("Failed to forward request to provider '{}'", provider.name),
+                        "Failed to forward request to upstream provider",
                     )
                 }
             }

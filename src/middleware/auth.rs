@@ -162,30 +162,30 @@ impl AuthState {
 
     /// Validate API key with timing-safe comparison
     /// Compares against ALL keys to prevent timing attacks
+    /// Uses bitwise OR to ensure no short-circuit evaluation
     pub fn validate_api_key(&self, key: &str) -> bool {
-        // Timing-safe: compare against ALL keys, not short-circuit
         let key_bytes = key.as_bytes();
-        let mut found = false;
+        let mut found = 0u8; // Use integer for constant-time OR
         for valid_key in &self.api_keys {
-            // Always perform the comparison (no short-circuit)
-            let matches: bool = valid_key.as_bytes().ct_eq(key_bytes).into();
-            found = found || matches;
+            // Always perform the comparison (no short-circuit with bitwise OR)
+            let matches: u8 = if bool::from(valid_key.as_bytes().ct_eq(key_bytes)) { 1 } else { 0 };
+            found |= matches; // Bitwise OR is constant-time
         }
-        found
+        found == 1
     }
 
     /// Validate admin API key with timing-safe comparison
     /// Compares against ALL keys to prevent timing attacks
+    /// Uses bitwise OR to ensure no short-circuit evaluation
     pub fn validate_admin_key(&self, key: &str) -> bool {
-        // Timing-safe: compare against ALL keys, not short-circuit
         let key_bytes = key.as_bytes();
-        let mut found = false;
+        let mut found = 0u8; // Use integer for constant-time OR
         for valid_key in &self.admin_api_keys {
-            // Always perform the comparison (no short-circuit)
-            let matches: bool = valid_key.as_bytes().ct_eq(key_bytes).into();
-            found = found || matches;
+            // Always perform the comparison (no short-circuit with bitwise OR)
+            let matches: u8 = if bool::from(valid_key.as_bytes().ct_eq(key_bytes)) { 1 } else { 0 };
+            found |= matches; // Bitwise OR is constant-time
         }
-        found
+        found == 1
     }
 }
 
@@ -300,14 +300,19 @@ pub async fn admin_auth_middleware(
             error!("Admin endpoint accessed but no admin API keys configured");
             return Err(StatusCode::UNAUTHORIZED);
         }
-        
+
         // In dev mode, allow access only with explicit opt-in via env var
         #[cfg(debug_assertions)]
-        if std::env::var("APERTURE_ALLOW_DEV_ADMIN").as_deref() == Ok("1") {
-            tracing::warn!("Admin endpoint accessed in dev mode without admin keys (APERTURE_ALLOW_DEV_ADMIN=1)");
-            return Ok(next.run(request).await);
+        {
+            if std::env::var("APERTURE_ALLOW_DEV_ADMIN").as_deref() == Ok("1") {
+                tracing::warn!("Admin endpoint accessed in dev mode without admin keys (APERTURE_ALLOW_DEV_ADMIN=1)");
+                return Ok(next.run(request).await);
+            }
+            return Err(StatusCode::UNAUTHORIZED);
         }
-        
+
+        // This should never be reached due to cfg attributes, but satisfies the compiler
+        #[allow(unreachable_code)]
         return Err(StatusCode::UNAUTHORIZED);
     }
 

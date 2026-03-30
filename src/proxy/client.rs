@@ -6,7 +6,8 @@ use reqwest::Client;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tracing::{debug, error, info};
+use tokio::net;
+use tracing::{debug, error, info, warn};
 use url::Url;
 
 use crate::config::{ApertureConfig, HttpConfig};
@@ -230,8 +231,7 @@ impl ProxyClient {
         // 1. Always block cloud metadata endpoints (169.254.169.254, etc.)
         // 2. Block internal IPs (private, loopback, link-local)
         //    Exception: CGN range 100.64.0.0/10 is allowed for Tailscale providers
-        // 3. Admin-configured providers are trusted, but we validate resolved hosts
-        //    as defense-in-depth against DNS rebinding attacks
+        // 3. DNS rebinding protection: resolve and validate IPs at request time
         if let Some(host) = parsed_url.host_str() {
             // Always block metadata endpoints regardless of provider config
             if is_metadata_endpoint(host) {
@@ -251,6 +251,10 @@ impl ProxyClient {
                         ip
                     ));
                 }
+            } else {
+                // For hostname-based URLs, resolve DNS and validate IPs (DNS rebinding protection)
+                let port = parsed_url.port().unwrap_or(if parsed_url.scheme() == "https" { 443 } else { 80 });
+                validate_resolved_ips(host, port).await?;
             }
         }
 
@@ -393,6 +397,85 @@ fn is_metadata_endpoint(host: &str) -> bool {
         // Hostname-based metadata endpoints (GCP, Azure)
         || host == "metadata.google.internal"
         || host == "metadata.azure.com"
+}
+
+/// Check if an IP address is a cloud metadata IP
+fn is_metadata_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            // AWS/GCP/Azure metadata: 169.254.169.254
+            octets == [169, 254, 169, 254]
+            // Alibaba Cloud metadata: 100.100.100.200
+            || octets == [100, 100, 100, 200]
+        }
+        IpAddr::V6(v6) => {
+            // Check for IPv4-mapped metadata addresses
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_metadata_ip(&IpAddr::V4(v4));
+            }
+            false
+        }
+    }
+}
+
+/// Resolve hostname and validate all resolved IPs against SSRF protection
+/// This prevents DNS rebinding attacks where DNS changes after validation
+async fn validate_resolved_ips(host: &str, port: u16) -> anyhow::Result<()> {
+    // Skip DNS resolution for IP addresses (already validated)
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+    
+    // Resolve the hostname
+    let addr_str = format!("{}:{}", host, port);
+    let addrs_result = net::lookup_host(&addr_str).await;
+    
+    match addrs_result {
+        Ok(addrs_iterator) => {
+            let addrs: Vec<_> = addrs_iterator.collect();
+            let addr_count = addrs.len();
+            
+            if addrs.is_empty() {
+                warn!("DNS resolution returned no addresses for: {}", host);
+                return Err(anyhow::anyhow!("DNS resolution failed for host"));
+            }
+            
+            for addr in addrs {
+                let ip = addr.ip();
+                if is_internal_ip_strict(&ip) {
+                    warn!(
+                        "DNS rebinding blocked: {} resolved to internal IP {}",
+                        host, ip
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Access to internal IP '{}' (resolved from '{}') is blocked (SSRF protection)",
+                        ip, host
+                    ));
+                }
+                
+                // Check for metadata IP
+                if is_metadata_ip(&ip) {
+                    warn!(
+                        "DNS rebinding blocked: {} resolved to metadata IP {}",
+                        host, ip
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Access to metadata IP '{}' (resolved from '{}') is blocked",
+                        ip, host
+                    ));
+                }
+            }
+            
+            debug!("DNS resolution validated for {}: {} address(es)", host, addr_count);
+            Ok(())
+        }
+        Err(e) => {
+            // DNS resolution failure - log but don't block (let the request proceed and fail naturally)
+            debug!("DNS resolution failed for {}: {} (will fail at connection time)", host, e);
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

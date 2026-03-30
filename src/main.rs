@@ -3,18 +3,25 @@
 
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
-use tracing::info;
+use tracing::{debug, info};
 
 use aperture_router::{config::Config, discovery::models::ModelDiscovery, server};
+
+/// Re-export from cli module for consistency
+use aperture_router::cli::{SYSTEM_CONFIG_PATH, is_running_elevated};
 
 #[derive(Parser, Debug)]
 #[command(name = "aperture-router")]
 #[command(about = "Universal AI router for Tailscale Aperture", long_about = None)]
 #[command(version)]
 struct Cli {
-    /// Config file path
-    #[arg(short, long, global = true, default_value = "config.toml")]
-    config: String,
+    /// Config file path (defaults to system path when running as root)
+    #[arg(short, long, global = true)]
+    config: Option<String>,
+
+    /// Use system-wide config at /etc/aperture-router/config.toml
+    #[arg(long, global = true)]
+    system: bool,
 
     /// Enable debug mode
     #[arg(short, long, global = true)]
@@ -22,6 +29,19 @@ struct Cli {
 
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+impl Cli {
+    /// Get the resolved config path
+    fn config_path(&self) -> String {
+        if let Some(ref path) = self.config {
+            path.clone()
+        } else if self.system || is_running_elevated() {
+            SYSTEM_CONFIG_PATH.to_string()
+        } else {
+            "config.toml".to_string()
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -131,12 +151,15 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(&log_filter)
         .init();
 
+    // Get config path once (avoids partial move issues)
+    let config_path = cli.config_path();
+
     match cli.command {
         None | Some(Commands::Run) => {
-            run_server(&cli.config).await?;
+            run_server(&config_path).await?;
         }
         Some(Commands::Config { command }) => {
-            handle_config_command(command, &cli.config).await?;
+            handle_config_command(command, &config_path).await?;
         }
     }
 
@@ -193,7 +216,7 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
         }
     };
 
-    info!("Aperture gateway: {}", config.aperture.base_url);
+    debug!("Aperture gateway: {}", config.aperture.base_url);
     info!("Server address: {}", config.server_addr()?);
 
     // Check authentication status
@@ -228,8 +251,16 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown_token))
+        .with_graceful_shutdown(shutdown_signal(shutdown_token.clone()))
         .await?;
+    
+    // Signal background tasks to stop and wait for graceful shutdown
+    info!("Signaling background tasks to stop...");
+    shutdown_token.cancel();
+    
+    // Give background tasks a moment to clean up
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    info!("Server shutdown complete");
 
     Ok(())
 }
