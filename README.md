@@ -173,6 +173,44 @@ burst_size = 30
 | `/admin/stats` | GET | Server statistics (admin key) |
 | `/admin/refresh-models` | POST | Force model refresh (admin key) |
 
+### Session Tracking
+
+All requests are logged with both a `request_id` and `session_id` for easy log grouping:
+
+- **`X-Session-ID`** header: Send this to group multiple requests in one session
+- If not provided, server generates a new session ID and returns it in response headers
+- Use the returned session ID in subsequent requests to maintain session continuity
+
+**Example:**
+
+```bash
+# First request - server generates session ID
+curl -X POST http://127.0.0.1:8765/v1/chat/completions \
+  -H "x-api-key: your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
+
+# Response includes X-Session-ID header
+# X-Session-ID: 550e8400-e29b-41d4-a716-446655440000
+
+# Subsequent requests - reuse session ID for log grouping
+curl -X POST http://127.0.0.1:8765/v1/chat/completions \
+  -H "x-api-key: your-key" \
+  -H "x-session-id: 550e8400-e29b-41d4-a716-446655440000" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Follow-up"}]}'
+```
+
+Logs will show both IDs:
+```
+request_id=abc-123 session_id=550e8400... "Request started"
+request_id=abc-123 session_id=550e8400... "Request completed"
+request_id=def-456 session_id=550e8400... "Request started"
+request_id=def-456 session_id=550e8400... "Request completed"
+```
+
+Filter logs by session_id to see all requests from a single user session.
+
 ## Security Features
 
 - ✅ **Zeroizing API Keys** - Keys securely wiped from memory

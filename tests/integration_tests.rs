@@ -370,4 +370,127 @@ mod integration_tests {
         // Verify response is successful
         assert_eq!(response.status(), StatusCode::OK);
     }
+
+    // ============================================
+    // Session ID Tests
+    // ============================================
+
+    #[tokio::test]
+    async fn test_session_id_generated_when_not_provided() {
+        let config = create_test_config_no_auth();
+        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        // Request without x-session-id header
+        let request = Request::builder()
+            .uri("/health")
+            .method(Method::GET)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // Response should contain x-session-id header
+        let session_id = response.headers().get("x-session-id");
+        assert!(session_id.is_some(), "Response should contain x-session-id header");
+
+        // Session ID should be a valid UUID
+        let session_id_str = session_id.unwrap().to_str().unwrap();
+        assert!(
+            uuid::Uuid::parse_str(session_id_str).is_ok(),
+            "Session ID should be a valid UUID"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_id_reused_when_valid() {
+        let config = create_test_config_no_auth();
+        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        let test_session_id = uuid::Uuid::new_v4();
+
+        // Request with valid x-session-id header
+        let request = Request::builder()
+            .uri("/health")
+            .method(Method::GET)
+            .header("x-session-id", test_session_id.to_string())
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // Response should echo the same session ID
+        let response_session_id = response.headers().get("x-session-id").unwrap().to_str().unwrap();
+        assert_eq!(
+            response_session_id,
+            test_session_id.to_string(),
+            "Response should echo the provided session ID"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_id_rejected_when_malformed() {
+        let config = create_test_config_no_auth();
+        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        // Request with invalid session ID format
+        let request = Request::builder()
+            .uri("/health")
+            .method(Method::GET)
+            .header("x-session-id", "not-a-valid-uuid")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // Response should contain a NEW valid session ID (not the malformed one)
+        let response_session_id = response.headers().get("x-session-id").unwrap().to_str().unwrap();
+        assert_ne!(
+            response_session_id,
+            "not-a-valid-uuid",
+            "Response should not echo malformed session ID"
+        );
+        assert!(
+            uuid::Uuid::parse_str(response_session_id).is_ok(),
+            "Response should contain a valid UUID"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_request_id_unique_per_request() {
+        let config = create_test_config_no_auth();
+        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        // Make two requests with same session ID
+        let test_session_id = uuid::Uuid::new_v4();
+
+        let request1 = Request::builder()
+            .uri("/health")
+            .method(Method::GET)
+            .header("x-session-id", test_session_id.to_string())
+            .body(Body::empty())
+            .unwrap();
+
+        let request2 = Request::builder()
+            .uri("/health")
+            .method(Method::GET)
+            .header("x-session-id", test_session_id.to_string())
+            .body(Body::empty())
+            .unwrap();
+
+        let response1 = app.clone().oneshot(request1).await.unwrap();
+        let response2 = app.oneshot(request2).await.unwrap();
+
+        // Both should have same session ID
+        let session1 = response1.headers().get("x-session-id").unwrap().to_str().unwrap();
+        let session2 = response2.headers().get("x-session-id").unwrap().to_str().unwrap();
+        assert_eq!(session1, session2, "Session ID should be the same across requests");
+
+        // Both should succeed
+        assert_eq!(response1.status(), StatusCode::OK);
+        assert_eq!(response2.status(), StatusCode::OK);
+    }
 }
