@@ -311,7 +311,7 @@ pub async fn admin_auth_middleware(
             return Err(StatusCode::UNAUTHORIZED);
         }
 
-        // This should never be reached due to cfg attributes, but satisfies the compiler
+        // Fallback for non-unix or edge cases (should not be reached in normal builds)
         #[allow(unreachable_code)]
         return Err(StatusCode::UNAUTHORIZED);
     }
