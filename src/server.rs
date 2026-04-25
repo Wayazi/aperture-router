@@ -14,7 +14,7 @@ use tower_http::{
     cors::CorsLayer, limit::RequestBodyLimitLayer, set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
-use tracing::info;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -22,31 +22,72 @@ use crate::{
     proxy::client::ProxyClient, ProviderRegistry,
 };
 
-/// Middleware to add request ID for tracing
+/// Header name for session ID (client can provide to group requests)
+const SESSION_ID_HEADER: &str = "x-session-id";
+
+/// Middleware to add request ID and session ID for tracing
+///
+/// Session ID allows grouping multiple requests from the same client session.
+/// Clients can send `X-Session-ID` header to maintain session continuity.
+/// If not provided, a new session ID is generated and returned in response.
 async fn add_request_id(request: Request, next: Next) -> Response {
     let request_id = Uuid::new_v4();
-    
-    // Add request ID to tracing span
+
+    // Get or generate session ID
+    // Client can provide X-Session-ID header to maintain session across requests
+    let session_id = if let Some(header_value) = request.headers().get(SESSION_ID_HEADER) {
+        match header_value.to_str() {
+            Ok(s) => match Uuid::parse_str(s) {
+                Ok(uuid) => uuid,
+                Err(e) => {
+                    debug!("Invalid session ID format provided: {}, generating new one", e);
+                    Uuid::new_v4()
+                }
+            },
+            Err(_) => {
+                debug!("Session ID header contains non-UTF8 characters, generating new one");
+                Uuid::new_v4()
+            }
+        }
+    } else {
+        Uuid::new_v4()
+    };
+
+    // Add both IDs to tracing span for log grouping
     let span = tracing::info_span!(
         "request",
         request_id = %request_id,
+        session_id = %session_id,
         method = %request.method(),
         path = %request.uri().path(),
     );
-    
-    // Log request start
+
+    // Log request start with session context
     info!(parent: &span, "Request started");
-    
+
     // Run the request in the span
-    let response = next.run(request).await;
-    
+    let mut response = next.run(request).await;
+
+    // Add session ID to response headers so client can reuse it
+    match axum::http::HeaderValue::from_str(&session_id.to_string()) {
+        Ok(header_value) => {
+            response.headers_mut().insert(
+                axum::http::HeaderName::from_static(SESSION_ID_HEADER),
+                header_value,
+            );
+        }
+        Err(e) => {
+            warn!("Failed to set session ID response header: {}", e);
+        }
+    }
+
     // Log request completion
     info!(
         parent: &span,
         status = %response.status(),
         "Request completed"
     );
-    
+
     response
 }
 
@@ -94,6 +135,7 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
         axum::http::header::AUTHORIZATION,
         axum::http::header::ACCEPT,
         axum::http::HeaderName::from_static("x-api-key"),
+        axum::http::HeaderName::from_static("x-session-id"),
     ];
 
     let methods = [
