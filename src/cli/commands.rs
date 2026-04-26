@@ -23,7 +23,7 @@ use crate::config::Config;
 use std::os::unix::fs::PermissionsExt;
 
 // Import shared constants and functions from parent module
-use super::{SYSTEM_CONFIG_PATH, is_running_elevated};
+use super::{is_running_elevated, SYSTEM_CONFIG_PATH};
 
 /// Fix file ownership when saving to system path as root
 /// When running under sudo, the file is created as root:root but the

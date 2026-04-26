@@ -8,7 +8,7 @@ use tracing::{debug, info};
 use aperture_router::{config::Config, discovery::models::ModelDiscovery, server};
 
 /// Re-export from cli module for consistency
-use aperture_router::cli::{SYSTEM_CONFIG_PATH, is_running_elevated};
+use aperture_router::cli::{is_running_elevated, SYSTEM_CONFIG_PATH};
 
 #[derive(Parser, Debug)]
 #[command(name = "aperture-router")]
@@ -253,11 +253,11 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown_token.clone()))
         .await?;
-    
+
     // Signal background tasks to stop and wait for graceful shutdown
     info!("Signaling background tasks to stop...");
     shutdown_token.cancel();
-    
+
     // Give background tasks a moment to clean up
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     info!("Server shutdown complete");
