@@ -6,9 +6,15 @@ use http::StatusCode;
 use tracing::{debug, warn};
 
 use crate::{
-    routes::{proxy::{proxy_handler_multi, HasModel}, validate_model_or_error},
+    routes::{
+        proxy::{proxy_handler_multi, HasModel},
+        validate_model_or_error,
+    },
     server::AppState,
-    types::{anthropic::MessageRequest, validation::{validate_role, validate_message_content}},
+    types::{
+        anthropic::MessageRequest,
+        validation::{validate_message_content, validate_role},
+    },
 };
 
 impl HasModel for MessageRequest {
@@ -26,7 +32,7 @@ pub async fn anthropic_messages(
     if let Err(response) = validate_model_or_error(&request) {
         return *response;
     }
-    
+
     // Validate max_tokens (Anthropic requires > 0)
     if request.max_tokens == 0 {
         warn!("max_tokens is 0 or missing");
@@ -42,7 +48,7 @@ pub async fn anthropic_messages(
         )
             .into_response();
     }
-    
+
     // Validate max_tokens upper bound
     const MAX_TOKENS_LIMIT: u32 = 1_000_000;
     if request.max_tokens > MAX_TOKENS_LIMIT {
@@ -59,7 +65,7 @@ pub async fn anthropic_messages(
         )
             .into_response();
     }
-    
+
     // Validate messages
     const MAX_MESSAGES: usize = 1000;
     if request.messages.len() > MAX_MESSAGES {
@@ -76,7 +82,7 @@ pub async fn anthropic_messages(
         )
             .into_response();
     }
-    
+
     for (i, msg) in request.messages.iter().enumerate() {
         if let Err(e) = validate_role(&msg.role) {
             warn!("Invalid role in message {}: {}", i, e);
@@ -92,7 +98,7 @@ pub async fn anthropic_messages(
             )
                 .into_response();
         }
-        
+
         let content_str = msg.content.as_text();
         if let Err(e) = validate_message_content(&content_str) {
             warn!("Invalid content in message {}: {}", i, e);
@@ -109,7 +115,7 @@ pub async fn anthropic_messages(
                 .into_response();
         }
     }
-    
+
     // Validate other HashMap size (prevent memory exhaustion)
     const MAX_OTHER_FIELDS: usize = 50;
     if request.other.len() > MAX_OTHER_FIELDS {
@@ -126,7 +132,7 @@ pub async fn anthropic_messages(
         )
             .into_response();
     }
-    
+
     // Skip model validation when multi-provider is disabled (all models go to Aperture)
     if state.config.multi_provider_enabled {
         // Validate model exists (check both discovery and provider registry)
