@@ -6,9 +6,15 @@ use http::StatusCode;
 use tracing::{debug, warn};
 
 use crate::{
-    routes::{proxy::{proxy_handler_multi, HasModel}, validate_model_or_error},
+    routes::{
+        proxy::{proxy_handler_multi, HasModel},
+        validate_model_or_error,
+    },
     server::AppState,
-    types::{openai::ChatCompletionRequest, validation::{validate_role, validate_message_content}},
+    types::{
+        openai::ChatCompletionRequest,
+        validation::{validate_message_content, validate_role},
+    },
 };
 
 impl HasModel for ChatCompletionRequest {
@@ -26,7 +32,7 @@ pub async fn chat_completions(
     if let Err(response) = validate_model_or_error(&request) {
         return *response;
     }
-    
+
     // Validate max_tokens upper bound
     const MAX_TOKENS_LIMIT: u32 = 1_000_000;
     if let Some(max_tokens) = request.max_tokens {
@@ -45,7 +51,7 @@ pub async fn chat_completions(
                 .into_response();
         }
     }
-    
+
     // Validate messages
     const MAX_MESSAGES: usize = 1000;
     if request.messages.len() > MAX_MESSAGES {
@@ -62,7 +68,7 @@ pub async fn chat_completions(
         )
             .into_response();
     }
-    
+
     for (i, msg) in request.messages.iter().enumerate() {
         if let Err(e) = validate_role(&msg.role) {
             warn!("Invalid role in message {}: {}", i, e);
@@ -78,7 +84,7 @@ pub async fn chat_completions(
             )
                 .into_response();
         }
-        
+
         if let Some(content) = &msg.content {
             if let Some(content_str) = content.as_str() {
                 if let Err(e) = validate_message_content(content_str) {
@@ -98,7 +104,7 @@ pub async fn chat_completions(
             }
         }
     }
-    
+
     // Validate other HashMap size (prevent memory exhaustion)
     const MAX_OTHER_FIELDS: usize = 50;
     if request.other.len() > MAX_OTHER_FIELDS {
@@ -115,7 +121,7 @@ pub async fn chat_completions(
         )
             .into_response();
     }
-    
+
     // Skip model validation when multi-provider is disabled (all models go to Aperture)
     if state.config.multi_provider_enabled {
         // Validate model exists (check both discovery and provider registry)

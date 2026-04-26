@@ -104,11 +104,12 @@ impl ProxyClient {
         // Return error for non-success status codes
         if !response.status().is_success() {
             let status = response.status();
-            error!("Upstream request to {} failed with status: {}", endpoint, status);
+            error!(
+                "Upstream request to {} failed with status: {}",
+                endpoint, status
+            );
             // Log detailed error internally, return generic error to client
-            return Err(anyhow::anyhow!(
-                "Service temporarily unavailable"
-            ));
+            return Err(anyhow::anyhow!("Service temporarily unavailable"));
         }
 
         info!("Request succeeded with status: {}", response.status());
@@ -141,7 +142,10 @@ impl ProxyClient {
         // Check for non-success status codes
         if !response.status().is_success() {
             let status = response.status();
-            error!("Upstream streaming request to {} failed with status: {}", endpoint, status);
+            error!(
+                "Upstream streaming request to {} failed with status: {}",
+                endpoint, status
+            );
             // Return generic error to client (detailed error logged internally)
             return Ok(Box::pin(stream::once(async move {
                 Err(anyhow::anyhow!("Service temporarily unavailable"))
@@ -167,7 +171,7 @@ impl ProxyClient {
                     let chunk_size = bytes.len();
                     loop {
                         let current = total_bytes.load(Ordering::SeqCst);
-                        
+
                         // Check if adding this chunk would exceed the limit
                         if current + chunk_size > max_size {
                             return Err(anyhow::anyhow!(
@@ -176,7 +180,7 @@ impl ProxyClient {
                                 current / 1024 / 1024
                             ));
                         }
-                        
+
                         // Try to atomically update the counter
                         match total_bytes.compare_exchange(
                             current,
@@ -184,7 +188,7 @@ impl ProxyClient {
                             Ordering::SeqCst,
                             Ordering::SeqCst,
                         ) {
-                            Ok(_) => break, // Successfully updated
+                            Ok(_) => break,     // Successfully updated
                             Err(_) => continue, // Another thread updated, retry
                         }
                     }
@@ -253,7 +257,13 @@ impl ProxyClient {
                 }
             } else {
                 // For hostname-based URLs, resolve DNS and validate IPs (DNS rebinding protection)
-                let port = parsed_url.port().unwrap_or(if parsed_url.scheme() == "https" { 443 } else { 80 });
+                let port = parsed_url
+                    .port()
+                    .unwrap_or(if parsed_url.scheme() == "https" {
+                        443
+                    } else {
+                        80
+                    });
                 validate_resolved_ips(host, port).await?;
             }
         }
@@ -277,9 +287,7 @@ impl ProxyClient {
             let status = response.status();
             error!("Upstream request to {} failed with status: {}", url, status);
             // Log detailed error internally, return generic error to client
-            return Err(anyhow::anyhow!(
-                "Service temporarily unavailable"
-            ));
+            return Err(anyhow::anyhow!("Service temporarily unavailable"));
         }
 
         info!(
@@ -426,21 +434,21 @@ async fn validate_resolved_ips(host: &str, port: u16) -> anyhow::Result<()> {
     if host.parse::<IpAddr>().is_ok() {
         return Ok(());
     }
-    
+
     // Resolve the hostname
     let addr_str = format!("{}:{}", host, port);
     let addrs_result = net::lookup_host(&addr_str).await;
-    
+
     match addrs_result {
         Ok(addrs_iterator) => {
             let addrs: Vec<_> = addrs_iterator.collect();
             let addr_count = addrs.len();
-            
+
             if addrs.is_empty() {
                 warn!("DNS resolution returned no addresses for: {}", host);
                 return Err(anyhow::anyhow!("DNS resolution failed for host"));
             }
-            
+
             for addr in addrs {
                 let ip = addr.ip();
                 if is_internal_ip_strict(&ip) {
@@ -453,7 +461,7 @@ async fn validate_resolved_ips(host: &str, port: u16) -> anyhow::Result<()> {
                         ip, host
                     ));
                 }
-                
+
                 // Check for metadata IP
                 if is_metadata_ip(&ip) {
                     warn!(
@@ -462,17 +470,24 @@ async fn validate_resolved_ips(host: &str, port: u16) -> anyhow::Result<()> {
                     );
                     return Err(anyhow::anyhow!(
                         "Access to metadata IP '{}' (resolved from '{}') is blocked",
-                        ip, host
+                        ip,
+                        host
                     ));
                 }
             }
-            
-            debug!("DNS resolution validated for {}: {} address(es)", host, addr_count);
+
+            debug!(
+                "DNS resolution validated for {}: {} address(es)",
+                host, addr_count
+            );
             Ok(())
         }
         Err(e) => {
             // DNS resolution failure - log but don't block (let the request proceed and fail naturally)
-            debug!("DNS resolution failed for {}: {} (will fail at connection time)", host, e);
+            debug!(
+                "DNS resolution failed for {}: {} (will fail at connection time)",
+                host, e
+            );
             Ok(())
         }
     }

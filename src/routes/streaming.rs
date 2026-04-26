@@ -12,7 +12,10 @@ use serde_json::Value;
 use std::{convert::Infallible, time::Duration};
 use tracing::{debug, error, info, warn};
 
-use crate::{server::AppState, types::validation::{validate_message_content, validate_model_name, validate_role}};
+use crate::{
+    server::AppState,
+    types::validation::{validate_message_content, validate_model_name, validate_role},
+};
 
 /// Maximum number of messages allowed in streaming request
 const MAX_MESSAGES: usize = 1000;
@@ -58,7 +61,11 @@ pub async fn handle_proxy_stream(
             // Validate content length (string content)
             if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
                 if content.len() > MAX_CONTENT_SIZE {
-                    warn!("Content too large in streaming message {}: {} bytes", i, content.len());
+                    warn!(
+                        "Content too large in streaming message {}: {} bytes",
+                        i,
+                        content.len()
+                    );
                     return Err(StatusCode::BAD_REQUEST);
                 }
                 if let Err(e) = validate_message_content(content) {
@@ -70,13 +77,21 @@ pub async fn handle_proxy_stream(
             // Validate content array (multi-modal content)
             if let Some(content_array) = msg.get("content").and_then(|c| c.as_array()) {
                 if content_array.len() > 100 {
-                    warn!("Too many content blocks in streaming message {}: {}", i, content_array.len());
+                    warn!(
+                        "Too many content blocks in streaming message {}: {}",
+                        i,
+                        content_array.len()
+                    );
                     return Err(StatusCode::BAD_REQUEST);
                 }
                 for block in content_array {
                     if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
                         if text.len() > MAX_CONTENT_SIZE {
-                            warn!("Content block too large in streaming message {}: {} bytes", i, text.len());
+                            warn!(
+                                "Content block too large in streaming message {}: {} bytes",
+                                i,
+                                text.len()
+                            );
                             return Err(StatusCode::BAD_REQUEST);
                         }
                     }
@@ -96,7 +111,10 @@ pub async fn handle_proxy_stream(
     // Validate max_tokens if present
     if let Some(max_tokens) = request.get("max_tokens").and_then(|t| t.as_u64()) {
         if max_tokens > MAX_TOKENS_LIMIT as u64 {
-            warn!("max_tokens exceeds limit in streaming request: {}", max_tokens);
+            warn!(
+                "max_tokens exceeds limit in streaming request: {}",
+                max_tokens
+            );
             return Err(StatusCode::BAD_REQUEST);
         }
     }

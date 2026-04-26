@@ -40,7 +40,10 @@ async fn add_request_id(request: Request, next: Next) -> Response {
             Ok(s) => match Uuid::parse_str(s) {
                 Ok(uuid) => uuid,
                 Err(e) => {
-                    debug!("Invalid session ID format provided: {}, generating new one", e);
+                    debug!(
+                        "Invalid session ID format provided: {}, generating new one",
+                        e
+                    );
                     Uuid::new_v4()
                 }
             },

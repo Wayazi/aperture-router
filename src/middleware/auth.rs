@@ -168,7 +168,11 @@ impl AuthState {
         let mut found = 0u8; // Use integer for constant-time OR
         for valid_key in &self.api_keys {
             // Always perform the comparison (no short-circuit with bitwise OR)
-            let matches: u8 = if bool::from(valid_key.as_bytes().ct_eq(key_bytes)) { 1 } else { 0 };
+            let matches: u8 = if bool::from(valid_key.as_bytes().ct_eq(key_bytes)) {
+                1
+            } else {
+                0
+            };
             found |= matches; // Bitwise OR is constant-time
         }
         found == 1
@@ -182,7 +186,11 @@ impl AuthState {
         let mut found = 0u8; // Use integer for constant-time OR
         for valid_key in &self.admin_api_keys {
             // Always perform the comparison (no short-circuit with bitwise OR)
-            let matches: u8 = if bool::from(valid_key.as_bytes().ct_eq(key_bytes)) { 1 } else { 0 };
+            let matches: u8 = if bool::from(valid_key.as_bytes().ct_eq(key_bytes)) {
+                1
+            } else {
+                0
+            };
             found |= matches; // Bitwise OR is constant-time
         }
         found == 1

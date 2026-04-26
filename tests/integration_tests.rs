@@ -392,7 +392,10 @@ mod integration_tests {
 
         // Response should contain x-session-id header
         let session_id = response.headers().get("x-session-id");
-        assert!(session_id.is_some(), "Response should contain x-session-id header");
+        assert!(
+            session_id.is_some(),
+            "Response should contain x-session-id header"
+        );
 
         // Session ID should be a valid UUID
         let session_id_str = session_id.unwrap().to_str().unwrap();
@@ -421,7 +424,12 @@ mod integration_tests {
         let response = app.oneshot(request).await.unwrap();
 
         // Response should echo the same session ID
-        let response_session_id = response.headers().get("x-session-id").unwrap().to_str().unwrap();
+        let response_session_id = response
+            .headers()
+            .get("x-session-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert_eq!(
             response_session_id,
             test_session_id.to_string(),
@@ -446,10 +454,14 @@ mod integration_tests {
         let response = app.oneshot(request).await.unwrap();
 
         // Response should contain a NEW valid session ID (not the malformed one)
-        let response_session_id = response.headers().get("x-session-id").unwrap().to_str().unwrap();
+        let response_session_id = response
+            .headers()
+            .get("x-session-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert_ne!(
-            response_session_id,
-            "not-a-valid-uuid",
+            response_session_id, "not-a-valid-uuid",
             "Response should not echo malformed session ID"
         );
         assert!(
@@ -485,9 +497,22 @@ mod integration_tests {
         let response2 = app.oneshot(request2).await.unwrap();
 
         // Both should have same session ID
-        let session1 = response1.headers().get("x-session-id").unwrap().to_str().unwrap();
-        let session2 = response2.headers().get("x-session-id").unwrap().to_str().unwrap();
-        assert_eq!(session1, session2, "Session ID should be the same across requests");
+        let session1 = response1
+            .headers()
+            .get("x-session-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let session2 = response2
+            .headers()
+            .get("x-session-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            session1, session2,
+            "Session ID should be the same across requests"
+        );
 
         // Both should succeed
         assert_eq!(response1.status(), StatusCode::OK);
