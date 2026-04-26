@@ -33,7 +33,7 @@ fn hash_api_key(key: &str) -> String {
 const MAX_TRACKED_IPS: usize = 10000;
 
 /// Authentication state with rate limiting
-/// Uses Zeroizing<String> to securely wipe API keys from memory on drop
+/// Uses `Zeroizing<String>` to securely wipe API keys from memory on drop
 #[derive(Clone)]
 pub struct AuthState {
     pub api_keys: Vec<Zeroizing<String>>,
