@@ -6,7 +6,7 @@
 //! Converts router configuration to OpenClaw provider format
 //! for integration with LoongClaw and other OpenClaw-compatible AI frameworks.
 //!
-//! Reference: https://github.com/openclaw/openclaw (src/config/types.models.ts)
+//! Reference: <https://github.com/openclaw/openclaw> (src/config/types.models.ts)
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

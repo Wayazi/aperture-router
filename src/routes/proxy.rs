@@ -108,7 +108,7 @@ where
 }
 
 /// Generic proxy handler for JSON requests with multi-provider support
-/// Now accepts Option<Provider> directly since lookup is async
+/// Now accepts `Option<Provider>` directly since lookup is async
 pub async fn proxy_handler_multi<T>(
     proxy_client: ProxyClient,
     provider: Option<Provider>,
