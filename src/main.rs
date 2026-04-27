@@ -184,6 +184,9 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
                 if !key.is_empty() {
                     config.security.api_keys = vec![key];
                 }
+                // Zeroize the environment variable after loading
+                // Prevents key from being visible in /proc/[pid]/environ
+                std::env::remove_var("APERTURE_API_KEY");
             }
 
             // Allow no auth
