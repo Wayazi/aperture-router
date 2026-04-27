@@ -3,9 +3,11 @@
 
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{Method, Request, StatusCode},
 };
 use http_body_util::BodyExt;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tower::ServiceExt;
 
 use aperture_router::{config::Config, discovery::models::ModelDiscovery, server::create_router};
@@ -13,6 +15,16 @@ use aperture_router::{config::Config, discovery::models::ModelDiscovery, server:
 fn create_test_router(config: Config, discovery: std::sync::Arc<ModelDiscovery>) -> axum::Router {
     let (router, _shutdown_token) = create_router(config, discovery);
     router
+}
+
+/// Add ConnectInfo extension to a request for testing
+/// This simulates what the server does with into_make_service_with_connect_info
+fn add_connect_info<B>(mut request: Request<B>) -> Request<B> {
+    request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+        12345,
+    )));
+    request
 }
 
 #[cfg(test)]
@@ -35,7 +47,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
 
@@ -59,7 +71,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         // OPTIONS should be allowed due to CORS
         assert!(
             response.status().is_success() || response.status() == StatusCode::METHOD_NOT_ALLOWED
@@ -92,7 +104,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -108,7 +120,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
@@ -139,7 +151,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Check for CORS headers
         let cors_headers = response.headers().get("access-control-allow-origin");
@@ -159,7 +171,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
         // Check if compression headers are present
@@ -182,7 +194,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -204,7 +216,7 @@ mod route_tests {
                     .body(Body::empty())
                     .unwrap();
 
-                app_clone.oneshot(request).await
+                app_clone.oneshot(add_connect_info(request)).await
             });
             handles.push(handle);
         }
@@ -230,7 +242,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Check content type
         let content_type = response.headers().get("content-type");
@@ -271,7 +283,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
         let body = response.into_body();
@@ -297,7 +309,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -313,7 +325,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -334,7 +346,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         // Regular key should be rejected for admin endpoints
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
@@ -353,7 +365,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -373,7 +385,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         // May fail due to no upstream, but should NOT be 401
         // (could be 500 if upstream unavailable, but auth passed)
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
@@ -391,7 +403,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -420,7 +432,7 @@ mod route_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         // When no admin keys configured, admin endpoints return 401
         // (unless APERTURE_ALLOW_DEV_ADMIN=1 is set in dev mode)
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);

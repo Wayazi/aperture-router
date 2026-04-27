@@ -203,20 +203,17 @@ fn extract_client_ip(
     trusted_proxies: &HashSet<IpAddr>,
 ) -> Result<IpAddr, StatusCode> {
     // Try to get the actual connection IP (cannot be spoofed)
+    // ConnectInfo is populated by into_make_service_with_connect_info::<SocketAddr>()
     let peer_ip = request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
         .map(|info| info.ip())
-        .unwrap_or_else(|| {
-            // Fallback for test environments where ConnectInfo is not available
-            // This is safe in tests but should not happen in production
-            if cfg!(test) {
-                std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))
-            } else {
-                // In production, this should never happen
-                std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))
-            }
-        });
+        .ok_or_else(|| {
+            // This should never happen with correct server configuration
+            // Server must use into_make_service_with_connect_info::<SocketAddr>()
+            tracing::error!("ConnectInfo not available - server misconfiguration");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     // If connection is from a trusted proxy, check x-forwarded-for header
     if trusted_proxies.contains(&peer_ip) {
@@ -252,7 +249,7 @@ pub async fn auth_middleware(
     // Extract client IP
     let client_ip = match extract_client_ip(&request, &auth.trusted_proxies) {
         Ok(ip) => ip,
-        Err(_) => return Err(StatusCode::BAD_REQUEST),
+        Err(status) => return Err(status),  // Preserve error code (INTERNAL_SERVER_ERROR)
     };
 
     // Check rate limit and record failure atomically (fixes race condition)
@@ -327,7 +324,7 @@ pub async fn admin_auth_middleware(
     // Extract client IP
     let client_ip = match extract_client_ip(&request, &auth.trusted_proxies) {
         Ok(ip) => ip,
-        Err(_) => return Err(StatusCode::BAD_REQUEST),
+        Err(status) => return Err(status),  // Preserve error code (INTERNAL_SERVER_ERROR)
     };
 
     // Check rate limit and record failure atomically
