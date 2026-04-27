@@ -28,9 +28,11 @@ use super::{is_running_elevated, SYSTEM_CONFIG_PATH};
 /// Fix file ownership when saving to system path as root
 /// When running under sudo, the file is created as root:root but the
 /// aperture-router service runs as aperture-router user, so it can't read the config.
-/// This function chowns the file to the aperture-router user.
+/// This function chowns the file to the aperture-router user using native syscalls.
 #[cfg(unix)]
 fn fix_system_config_ownership(path: &str) -> anyhow::Result<()> {
+    use nix::unistd::{chown, Group, User};
+
     // Only fix ownership if:
     // 1. We're running elevated (sudo/root)
     // 2. The path is the system config path
@@ -39,29 +41,38 @@ fn fix_system_config_ownership(path: &str) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Try to change ownership to aperture-router user
-    // Use std::process::Command since chown requires root privileges
-    let output = std::process::Command::new("chown")
-        .arg("aperture-router:aperture-router")
-        .arg(path)
-        .output();
+    // Look up the aperture-router user and group using native syscalls
+    let user = match User::from_name("aperture-router")? {
+        Some(u) => u,
+        None => {
+            tracing::debug!("aperture-router user not found, skipping ownership fix");
+            return Ok(());
+        }
+    };
 
-    match output {
-        Ok(o) if o.status.success() => {
+    let group = match Group::from_name("aperture-router")? {
+        Some(g) => g,
+        None => {
+            tracing::debug!("aperture-router group not found, skipping ownership fix");
+            return Ok(());
+        }
+    };
+
+    // Use native chown syscall - no PATH search, no shell execution
+    match chown(std::path::Path::new(path), Some(user.uid), Some(group.gid)) {
+        Ok(()) => {
             tracing::info!("Fixed ownership for system config: {}", path);
         }
-        Ok(o) => {
-            // chown failed - log warning but don't fail
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            tracing::warn!("Could not fix ownership for {}: {}", path, stderr);
+        Err(e) => {
+            tracing::warn!("Could not fix ownership for {}: {}", path, e);
             eprintln!(
                 "Warning: Could not change ownership of {}. The service may not be able to read it.",
                 path
             );
-            eprintln!("Run: sudo chown aperture-router:aperture-router {}", path);
-        }
-        Err(e) => {
-            tracing::warn!("Could not execute chown: {}", e);
+            eprintln!(
+                "Run: sudo chown aperture-router:aperture-router {}",
+                path
+            );
         }
     }
 
