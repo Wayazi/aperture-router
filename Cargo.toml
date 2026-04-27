@@ -72,6 +72,10 @@ uuid = { version = "1", features = ["v4"], default-features = false }
 # Lazy static initialization for shared client
 once_cell = "1.19"
 
+# Unix-specific functionality (user/group lookup for secure file operations)
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["user", "fs"] }
+
 [profile.release]
 lto = "thin"
 strip = true
