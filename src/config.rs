@@ -379,6 +379,9 @@ impl Config {
         if let Ok(api_key) = std::env::var("APERTURE_API_KEY") {
             tracing::info!("Overriding api_key with environment variable");
             config.aperture.api_key = Some(api_key);
+            // Zeroize the environment variable after loading
+            // Prevents key from being visible in /proc/[pid]/environ
+            std::env::remove_var("APERTURE_API_KEY");
         }
 
         config
