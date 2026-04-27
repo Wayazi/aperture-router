@@ -69,10 +69,7 @@ fn fix_system_config_ownership(path: &str) -> anyhow::Result<()> {
                 "Warning: Could not change ownership of {}. The service may not be able to read it.",
                 path
             );
-            eprintln!(
-                "Run: sudo chown aperture-router:aperture-router {}",
-                path
-            );
+            eprintln!("Run: sudo chown aperture-router:aperture-router {}", path);
         }
     }
 
@@ -412,9 +409,10 @@ pub fn generate_config(
     if generate_key {
         let api_key = generate_api_key();
         config.security.api_keys = vec![api_key.clone()];
-        eprintln!("🔑 Generated API key: {}", api_key);
-        eprintln!("   Save this key securely - it won't be shown again!");
-        eprintln!();
+        // Print to stdout (not stderr which may be captured by logging systems)
+        println!("🔑 Generated API key: {}", api_key);
+        println!("   Save this key securely - it won't be shown again!");
+        println!();
     }
 
     // Get API key from environment if set
