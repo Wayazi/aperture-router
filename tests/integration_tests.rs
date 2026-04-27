@@ -3,9 +3,11 @@
 
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{Method, Request, StatusCode},
 };
 use http_body_util::BodyExt;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tower::ServiceExt;
 use wiremock::matchers::{method, path};
 use wiremock::{MockServer, ResponseTemplate};
@@ -15,6 +17,16 @@ use aperture_router::{config::Config, discovery::models::ModelDiscovery, server:
 fn create_test_router(config: Config, discovery: std::sync::Arc<ModelDiscovery>) -> axum::Router {
     let (router, _shutdown_token) = create_router(config, discovery);
     router
+}
+
+/// Add ConnectInfo extension to a request for testing
+/// This simulates what the server does with into_make_service_with_connect_info
+fn add_connect_info<B>(mut request: Request<B>) -> Request<B> {
+    request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+        12345,
+    )));
+    request
 }
 
 #[cfg(test)]
@@ -46,7 +58,7 @@ mod integration_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
 
@@ -73,7 +85,7 @@ mod integration_tests {
             ))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Should return 401 Unauthorized
         // In test environment, returns BAD_GATEWAY due to no upstream server
@@ -100,7 +112,7 @@ mod integration_tests {
             ))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // In test environment without upstream server, this returns BAD_GATEWAY
         // In production with proper upstream, would return UNAUTHORIZED
@@ -124,7 +136,7 @@ mod integration_tests {
             ))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Should return 401 Unauthorized
         // In test environment, returns BAD_GATEWAY due to no upstream server
@@ -148,7 +160,7 @@ mod integration_tests {
             ))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // In test environment without upstream server, this returns BAD_GATEWAY
         // In production with proper upstream, would return UNAUTHORIZED
@@ -172,7 +184,7 @@ mod integration_tests {
                 .body(Body::from(r#"{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Test"}]}"#))
                 .unwrap();
 
-            let response = app_clone.oneshot(request).await.unwrap();
+            let response = app_clone.oneshot(add_connect_info(request)).await.unwrap();
 
             // All requests should fail due to auth or upstream issues
             assert!(!response.status().is_success());
@@ -195,7 +207,7 @@ mod integration_tests {
             ))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Should not be unauthorized (will fail for other reasons, likely proxy)
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
@@ -216,7 +228,7 @@ mod integration_tests {
             .body(Body::from(r#"{"model": "claude-3-sonnet-20240229", "max_tokens": 100, "messages": [{"role": "user", "content": "Test"}]}"#))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Should not be unauthorized
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
@@ -237,7 +249,7 @@ mod integration_tests {
             .body(Body::from(r#"{"model": "gpt-3.5-turbo", "stream": true, "messages": [{"role": "user", "content": "Test"}]}"#))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Should not be unauthorized
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
@@ -272,7 +284,7 @@ mod integration_tests {
             ))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -294,7 +306,7 @@ mod integration_tests {
                     .body(Body::empty())
                     .unwrap();
 
-                app_clone.oneshot(request).await
+                app_clone.oneshot(add_connect_info(request)).await
             });
             handles.push(handle);
         }
@@ -320,7 +332,7 @@ mod integration_tests {
             .body(Body::from(r#"{"invalid": json}"#))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Should return a client error
         assert!(response.status().is_client_error() || response.status().is_server_error());
@@ -341,7 +353,7 @@ mod integration_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Check CORS headers
         let allow_origin = response.headers().get("access-control-allow-origin");
@@ -365,7 +377,7 @@ mod integration_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Verify response is successful
         assert_eq!(response.status(), StatusCode::OK);
@@ -388,7 +400,7 @@ mod integration_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Response should contain x-session-id header
         let session_id = response.headers().get("x-session-id");
@@ -421,7 +433,7 @@ mod integration_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Response should echo the same session ID
         let response_session_id = response
@@ -451,7 +463,7 @@ mod integration_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Response should contain a NEW valid session ID (not the malformed one)
         let response_session_id = response
