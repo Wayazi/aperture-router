@@ -78,15 +78,19 @@ pub fn clean_url(url: &str) -> Result<String, String> {
 
 /// Check if a host is blocked (metadata endpoints, etc.)
 fn is_blocked_host(host: &str) -> bool {
+    // Normalize: strip trailing dot (DNS equivalent per RFC 1034)
+    // This prevents bypass via "metadata.internal." (trailing dot)
+    let normalized = host.strip_suffix('.').unwrap_or(host);
+
     // Block cloud metadata endpoints (exact match to prevent bypass via subdomains)
-    host == "169.254.169.254"
-        || host == "[::ffff:169.254.169.254]"
-        || host == "100.100.100.200"
-        || host == "metadata.google.internal"
-        || host == "metadata.azure.com"
-        // Block Kubernetes service DNS
-        || host.ends_with(".internal")
-        && host.starts_with("metadata")
+    normalized == "169.254.169.254"
+        || normalized == "[::ffff:169.254.169.254]"
+        || normalized == "100.100.100.200"
+        || normalized == "metadata.google.internal"
+        || normalized == "metadata.azure.com"
+        // Block Kubernetes service DNS - any .internal domain containing "metadata"
+        // This catches metadata.kubernetes.internal, kubernetes-metadata.internal, etc.
+        || normalized.ends_with(".internal") && normalized.contains("metadata")
 }
 
 /// Validate API key strength
@@ -209,5 +213,24 @@ mod tests {
     fn test_validate_api_key_placeholder() {
         assert!(validate_api_key("your-api-key-here").is_err());
         assert!(validate_api_key("PLACEHOLDER_KEY").is_err());
+    }
+
+    #[test]
+    fn test_blocked_host_internal_metadata() {
+        // These should be blocked (contain "metadata" in .internal domain)
+        assert!(is_blocked_host("metadata.internal"));
+        assert!(is_blocked_host("kubernetes-metadata.internal"));
+        assert!(is_blocked_host("some-metadata.internal"));
+        assert!(is_blocked_host("metadata.kubernetes.internal"));
+
+        // These should NOT be blocked (regular .internal domains)
+        assert!(!is_blocked_host("my-service.internal"));
+        assert!(!is_blocked_host("database.internal"));
+        assert!(!is_blocked_host("api.internal"));
+
+        // Trailing dot bypass prevention (RFC 1034 DNS equivalence)
+        assert!(is_blocked_host("metadata.internal."));
+        assert!(is_blocked_host("kubernetes-metadata.internal."));
+        assert!(is_blocked_host("metadata.google.internal."));
     }
 }
