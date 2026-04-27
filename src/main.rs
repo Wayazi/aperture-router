@@ -250,9 +250,12 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
     info!("Listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown_token.clone()))
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(shutdown_token.clone()))
+    .await?;
 
     // Signal background tasks to stop and wait for graceful shutdown
     info!("Signaling background tasks to stop...");
