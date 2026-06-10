@@ -6,11 +6,12 @@ use reqwest::Client;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::net;
 use tracing::{debug, error, info, warn};
 use url::Url;
 
-use crate::config::{ApertureConfig, HttpConfig};
+use crate::config::{ApertureConfig, EndpointStyle, HttpConfig};
 use crate::http_client::{create_client_with_timeouts, is_allowed_endpoint};
 
 /// HTTP client for proxying requests to Aperture
@@ -19,6 +20,7 @@ pub struct ProxyClient {
     client: Client,
     aperture_config: ApertureConfig,
     max_streaming_size_bytes: usize,
+    request_timeout: Duration,
 }
 
 impl ProxyClient {
@@ -71,10 +73,13 @@ impl ProxyClient {
         )
         .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {}", e))?;
 
+        let request_timeout = Duration::from_secs(http_config.request_timeout_secs);
+
         Ok(Self {
             client,
             aperture_config,
             max_streaming_size_bytes,
+            request_timeout,
         })
     }
 
@@ -220,6 +225,7 @@ impl ProxyClient {
         url: &str,
         body: Vec<u8>,
         api_key: Option<&str>,
+        endpoint_style: EndpointStyle,
     ) -> anyhow::Result<reqwest::Response> {
         // Validate URL is properly formed
         let parsed_url = Url::parse(url)?;
@@ -275,9 +281,8 @@ impl ProxyClient {
             .post(url)
             .header("Content-Type", "application/json");
 
-        // Add API key if provided
         if let Some(key) = api_key {
-            request = request.header("x-api-key", key);
+            request = add_auth_header(request, key, endpoint_style);
         }
 
         let response = request.body(body).send().await?;
@@ -298,10 +303,158 @@ impl ProxyClient {
         Ok(response)
     }
 
-    /// Validate endpoint and return parsed URL
-    /// Performs endpoint whitelist check, URL parsing, scheme validation, and SSRF protection
+    pub async fn forward_request_to_url_raw(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        api_key: Option<&str>,
+        endpoint_style: EndpointStyle,
+    ) -> anyhow::Result<reqwest::Response> {
+        let parsed_url = Url::parse(url)?;
+
+        if !matches!(parsed_url.scheme(), "https" | "http") {
+            return Err(anyhow::anyhow!(
+                "Invalid URL scheme. Only http and https are allowed."
+            ));
+        }
+
+        if let Some(host) = parsed_url.host_str() {
+            if is_metadata_endpoint(host) {
+                return Err(anyhow::anyhow!(
+                    "Access to metadata endpoint '{}' is blocked (SSRF protection)",
+                    host
+                ));
+            }
+
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                if is_internal_ip_strict(&ip) {
+                    return Err(anyhow::anyhow!(
+                        "Access to internal IP '{}' is blocked (SSRF protection). \
+                         Use Tailscale (100.64.0.0/10) or public IPs for providers.",
+                        ip
+                    ));
+                }
+            }
+        }
+
+        debug!("Forwarding request to custom URL (raw): {}", url);
+
+        let mut request = self
+            .client
+            .post(url)
+            .header("Content-Type", "application/json");
+
+        if let Some(key) = api_key {
+            request = add_auth_header(request, key, endpoint_style);
+        }
+
+        let response = request.body(body).send().await?;
+
+        Ok(response)
+    }
+
+    pub async fn forward_request_stream_to_url(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        api_key: Option<&str>,
+        endpoint_style: EndpointStyle,
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>>> {
+        let parsed_url = Url::parse(url)?;
+
+        if !matches!(parsed_url.scheme(), "https" | "http") {
+            return Err(anyhow::anyhow!(
+                "Invalid URL scheme. Only http and https are allowed."
+            ));
+        }
+
+        if let Some(host) = parsed_url.host_str() {
+            if is_metadata_endpoint(host) {
+                return Err(anyhow::anyhow!(
+                    "Access to metadata endpoint '{}' is blocked (SSRF protection)",
+                    host
+                ));
+            }
+
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                if is_internal_ip_strict(&ip) {
+                    return Err(anyhow::anyhow!(
+                        "Access to internal IP '{}' is blocked (SSRF protection). \
+                         Use Tailscale (100.64.0.0/10) or public IPs for providers.",
+                        ip
+                    ));
+                }
+            }
+        }
+
+        debug!("Forwarding streaming request to custom URL: {}", url);
+
+        let mut request = self
+            .client
+            .post(url)
+            .header("Content-Type", "application/json");
+
+        if let Some(key) = api_key {
+            request = add_auth_header(request, key, endpoint_style);
+        }
+
+        let request_timeout = self.request_timeout;
+        let response = tokio::time::timeout(request_timeout, request.body(body).send())
+            .await
+            .map_err(|_| anyhow::anyhow!("Streaming request to {} timed out", url))??;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            error!("Upstream streaming request to {} failed with status: {}", url, status);
+            return Err(anyhow::anyhow!("Service temporarily unavailable"));
+        }
+
+        info!(
+            "Streaming request to {} succeeded with status: {}",
+            url,
+            response.status()
+        );
+
+        let total_bytes = AtomicUsize::new(0);
+        let max_size = self.max_streaming_size_bytes;
+
+        let byte_stream = response.bytes_stream().map(move |chunk_result| {
+            chunk_result
+                .map_err(|e| anyhow::anyhow!("Stream error: {}", e))
+                .and_then(|bytes| {
+                    let chunk_size = bytes.len();
+                    loop {
+                        let current = total_bytes.load(Ordering::SeqCst);
+                        if current + chunk_size > max_size {
+                            return Err(anyhow::anyhow!(
+                                "Streaming response size limit exceeded (max {} MB, current {})",
+                                max_size / 1024 / 1024,
+                                current / 1024 / 1024
+                            ));
+                        }
+                        match total_bytes.compare_exchange(
+                            current,
+                            current + chunk_size,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        ) {
+                            Ok(_) => break,
+                            Err(_) => continue,
+                        }
+                    }
+
+                    std::str::from_utf8(&bytes)
+                        .map(|s| s.to_string())
+                        .map_err(|e| anyhow::anyhow!("UTF-8 error: {}", e))
+                })
+        });
+
+        let stream: Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>> =
+            Box::pin(byte_stream);
+        Ok(stream)
+    }
+
     fn validate_endpoint(&self, endpoint: &str) -> anyhow::Result<url::Url> {
-        // Validate endpoint is in whitelist (using static list, no allocation)
         if !is_allowed_endpoint(endpoint) {
             error!("Blocked request to disallowed endpoint: {}", endpoint);
             return Err(anyhow::anyhow!(
@@ -350,8 +503,22 @@ impl ProxyClient {
     }
 }
 
-/// Core internal IP check shared between both variants
-/// Returns true if the IP is private, loopback, link-local, or (if block_cgn) CGN range
+fn add_auth_header(
+    mut request: reqwest::RequestBuilder,
+    key: &str,
+    endpoint_style: EndpointStyle,
+) -> reqwest::RequestBuilder {
+    match endpoint_style {
+        EndpointStyle::Anthropic => {
+            request = request.header("x-api-key", key);
+        }
+        _ => {
+            request = request.header("authorization", format!("Bearer {}", key));
+        }
+    }
+    request
+}
+
 fn is_internal_ip_impl(ip: &IpAddr, block_cgn: bool) -> bool {
     match ip {
         IpAddr::V4(v4) => {

@@ -189,7 +189,7 @@ fn default_max_streaming_size() -> usize {
 }
 
 /// Endpoint style for different API providers
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointStyle {
     /// OpenAI v1 style: /v1/chat/completions, /v1/messages

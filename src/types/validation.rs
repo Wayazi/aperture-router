@@ -52,3 +52,36 @@ pub fn validate_message_content(content: &str) -> Result<(), String> {
         Ok(())
     }
 }
+
+pub fn validate_max_tokens(max_tokens: u32) -> Result<(), String> {
+    if max_tokens == 0 {
+        return Err("max_tokens must be greater than 0".to_string());
+    }
+    if max_tokens > 128_000 {
+        return Err(format!("max_tokens too large ({}, max 128000)", max_tokens));
+    }
+    Ok(())
+}
+
+pub fn validate_temperature(temperature: f32) -> Result<(), String> {
+    if temperature.is_nan() {
+        return Err("temperature must be a valid number".to_string());
+    }
+    if temperature < 0.0 {
+        return Err("temperature must be non-negative".to_string());
+    }
+    if temperature > 2.0 {
+        return Err(format!(
+            "temperature too high ({}, max 2.0)",
+            temperature
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_top_p(top_p: f32) -> Result<(), String> {
+    if !(0.0..=1.0).contains(&top_p) {
+        return Err(format!("top_p must be between 0.0 and 1.0, got {}", top_p));
+    }
+    Ok(())
+}

@@ -6,6 +6,7 @@ pub mod middleware;
 pub mod provider;
 pub mod proxy;
 pub mod routes;
+pub mod security;
 pub mod server;
 pub mod types;
 
