@@ -125,11 +125,12 @@ pub async fn chat_completions(
     // Skip model validation when multi-provider is disabled (all models go to Aperture)
     if state.config.multi_provider_enabled {
         // Validate model exists (check both discovery and provider registry)
-        let provider_has_model = state
-            .provider_registry
-            .get_provider_for_model(&request.model)
-            .await
-            .is_some();
+    let provider_has_model = state
+        .provider_registry
+        .get_providers_for_model(&request.model)
+        .await
+        .iter()
+        .any(|p| p.enabled);
         let discovery_has_model = state.discovery.is_valid_model(&request.model).await;
 
         if !provider_has_model && !discovery_has_model {
@@ -150,15 +151,14 @@ pub async fn chat_completions(
 
     debug!("Valid model: {}", request.model);
 
-    // Get provider for model (if any)
-    let provider = state
+    let providers = state
         .provider_registry
-        .get_provider_for_model(&request.model)
+        .get_providers_for_model(&request.model)
         .await;
 
     proxy_handler_multi(
         state.proxy_client,
-        provider,
+        providers,
         request,
         "v1/chat/completions",
         state.config.multi_provider_enabled,
