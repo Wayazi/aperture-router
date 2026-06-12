@@ -7,8 +7,8 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MessageRequest {
     pub model: String,
-    #[serde(default)]
-    pub max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
     pub messages: Vec<Message>,
     /// System prompt
     #[serde(skip_serializing_if = "Option::is_none")]

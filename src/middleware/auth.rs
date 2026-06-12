@@ -88,16 +88,26 @@ impl AuthState {
         !self.admin_api_keys.is_empty()
     }
 
-    /// Check rate limit and record failure atomically
-    /// Evicts oldest entries when MAX_TRACKED_IPS is exceeded to prevent memory exhaustion
-    pub async fn check_and_record_failure(&self, client_ip: IpAddr) -> Result<(), StatusCode> {
+    pub async fn is_banned(&self, client_ip: IpAddr) -> bool {
+        let attempts = self.failed_attempts.read().await;
+        if let Some(attempt_times) = attempts.get(&client_ip) {
+            let now = Instant::now();
+            let recent_count = attempt_times
+                .iter()
+                .filter(|t| now.duration_since(**t) < self.window_duration)
+                .count();
+            recent_count >= self.max_attempts
+        } else {
+            false
+        }
+    }
+
+    pub async fn record_failure(&self, client_ip: IpAddr) -> Result<(), StatusCode> {
         let mut attempts = self.failed_attempts.write().await;
 
         let now = Instant::now();
 
-        // Evict oldest entries if we've hit the IP tracking cap
         if attempts.len() >= MAX_TRACKED_IPS && !attempts.contains_key(&client_ip) {
-            // Find and remove the IP with the oldest most-recent attempt
             if let Some(oldest_ip) = attempts
                 .iter()
                 .filter_map(|(ip, times)| times.last().map(|t| (*ip, *t)))
@@ -114,17 +124,13 @@ impl AuthState {
 
         let attempt_times = attempts.entry(client_ip).or_insert_with(Vec::new);
 
-        // Remove old attempts outside the window
         attempt_times.retain(|timestamp| now.duration_since(*timestamp) < self.window_duration);
 
-        // Check if too many attempts in window
         if attempt_times.len() >= self.max_attempts {
-            // Don't add new attempt since we're at limit
             return Err(StatusCode::TOO_MANY_REQUESTS);
         }
 
-        // Add this attempt
-        attempt_times.push(Instant::now());
+        attempt_times.push(now);
 
         Ok(())
     }
@@ -234,7 +240,7 @@ fn extract_client_ip(
 }
 
 pub async fn auth_middleware(
-    State((config, auth)): State<(Arc<Config>, Arc<AuthState>)>,
+    State((config, auth, rate_limiter)): State<(Arc<Config>, Arc<AuthState>, crate::middleware::RateLimiter)>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
@@ -249,13 +255,16 @@ pub async fn auth_middleware(
     // Extract client IP
     let client_ip = match extract_client_ip(&request, &auth.trusted_proxies) {
         Ok(ip) => ip,
-        Err(status) => return Err(status),  // Preserve error code (INTERNAL_SERVER_ERROR)
+        Err(status) => return Err(status),
     };
 
-    // Check rate limit and record failure atomically (fixes race condition)
-    if let Err(status) = auth.check_and_record_failure(client_ip).await {
-        warn!("Rate-limited authentication attempt from: {}", client_ip);
-        return Err(status);
+    // Check per-IP request rate limit for ALL requests (before auth)
+    rate_limiter.check_rate_limit(client_ip).await?;
+
+    // Check if IP is already banned from too many auth failures
+    if auth.is_banned(client_ip).await {
+        warn!("Rate-limited authentication attempt from banned IP: {}", client_ip);
+        return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
     // Check for API key in headers
@@ -271,7 +280,6 @@ pub async fn auth_middleware(
                 .and_then(|h| h.to_str().ok())
         });
 
-    // Use constant-time comparison for security
     let is_valid = match api_key {
         Some(key) => auth.validate_api_key(key),
         None => false,
@@ -286,6 +294,7 @@ pub async fn auth_middleware(
             "Authentication failed from: {} (missing or invalid API key)",
             client_ip
         );
+        auth.record_failure(client_ip).await?;
         Err(StatusCode::UNAUTHORIZED)
     }
 }
@@ -299,24 +308,22 @@ pub async fn admin_auth_middleware(
 ) -> Result<Response, StatusCode> {
     // Admin endpoints require explicit admin API key configuration
     if !auth.is_admin_enabled() {
-        // In production, always require admin keys
         #[cfg(not(debug_assertions))]
         {
             error!("Admin endpoint accessed but no admin API keys configured");
             return Err(StatusCode::UNAUTHORIZED);
         }
 
-        // In dev mode, allow access only with explicit opt-in via env var
         #[cfg(debug_assertions)]
         {
-            if std::env::var("APERTURE_ALLOW_DEV_ADMIN").as_deref() == Ok("1") {
-                tracing::warn!("Admin endpoint accessed in dev mode without admin keys (APERTURE_ALLOW_DEV_ADMIN=1)");
-                return Ok(next.run(request).await);
-            }
+            error!(
+                "Admin endpoint accessed but no admin API keys configured. \
+                 Please add admin_api_keys to your config file, or set \
+                 APERTURE_ALLOW_NO_AUTH=1 to disable auth entirely (not recommended)."
+            );
             return Err(StatusCode::UNAUTHORIZED);
         }
 
-        // Unreachable: one of the cfg blocks above always returns
         #[allow(unreachable_code)]
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -324,16 +331,16 @@ pub async fn admin_auth_middleware(
     // Extract client IP
     let client_ip = match extract_client_ip(&request, &auth.trusted_proxies) {
         Ok(ip) => ip,
-        Err(status) => return Err(status),  // Preserve error code (INTERNAL_SERVER_ERROR)
+        Err(status) => return Err(status),
     };
 
-    // Check rate limit and record failure atomically
-    if let Err(status) = auth.check_and_record_failure(client_ip).await {
+    // Check if IP is already banned from too many auth failures
+    if auth.is_banned(client_ip).await {
         warn!(
             "Rate-limited admin authentication attempt from: {}",
             client_ip
         );
-        return Err(status);
+        return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
     // Check for API key in headers
@@ -374,6 +381,7 @@ pub async fn admin_auth_middleware(
             },
             "Admin authentication failed"
         );
+        auth.record_failure(client_ip).await?;
         Err(StatusCode::UNAUTHORIZED)
     }
 }

@@ -13,6 +13,8 @@ use std::fmt;
 use url::Url;
 use zeroize::Zeroize;
 
+use crate::security::is_blocked_host;
+
 /// A string that never exposes its contents in debug/display output
 #[derive(Clone, Zeroize)]
 pub struct SecretString(String);
@@ -74,23 +76,6 @@ pub fn validate_url(url: &str) -> Result<Url, String> {
 pub fn clean_url(url: &str) -> Result<String, String> {
     validate_url(url)?;
     Ok(url.trim().to_string())
-}
-
-/// Check if a host is blocked (metadata endpoints, etc.)
-fn is_blocked_host(host: &str) -> bool {
-    // Normalize: strip trailing dot (DNS equivalent per RFC 1034)
-    // This prevents bypass via "metadata.internal." (trailing dot)
-    let normalized = host.strip_suffix('.').unwrap_or(host);
-
-    // Block cloud metadata endpoints (exact match to prevent bypass via subdomains)
-    normalized == "169.254.169.254"
-        || normalized == "[::ffff:169.254.169.254]"
-        || normalized == "100.100.100.200"
-        || normalized == "metadata.google.internal"
-        || normalized == "metadata.azure.com"
-        // Block Kubernetes service DNS - any .internal domain containing "metadata"
-        // This catches metadata.kubernetes.internal, kubernetes-metadata.internal, etc.
-        || normalized.ends_with(".internal") && normalized.contains("metadata")
 }
 
 /// Validate API key strength

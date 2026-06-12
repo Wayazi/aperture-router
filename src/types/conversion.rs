@@ -32,7 +32,7 @@ pub fn anthropic_request_to_openai(anthropic: &Value) -> Value {
     });
 
     if let Some(v) = anthropic.get("max_tokens") {
-        openai["max_tokens"] = v.clone();
+        openai["max_completion_tokens"] = v.clone();
     }
     if let Some(v) = anthropic.get("temperature") {
         openai["temperature"] = v.clone();
@@ -60,6 +60,16 @@ pub fn anthropic_request_to_openai(anthropic: &Value) -> Value {
     if let Some(tc) = anthropic.get("tool_choice") {
         openai["tool_choice"] = convert_anthropic_tool_choice(tc);
     }
+
+    if let Some(obj) = openai.as_object_mut() {
+        obj.remove("thinking");
+        obj.remove("top_k");
+        obj.remove("metadata");
+        obj.remove("system");
+        obj.remove("stop_sequences");
+    }
+
+    debug!("Converted OpenAI request fields: {:?}", openai.as_object().map(|o| o.keys().collect::<Vec<_>>()));
 
     openai
 }
@@ -414,15 +424,21 @@ fn convert_anthropic_tool_choice(tc: &Value) -> Value {
             _ => tc.clone(),
         },
         Value::Object(obj) => {
-            if obj.get("type").and_then(|t| t.as_str()) == Some("tool") {
-                if let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
-                    return serde_json::json!({
-                        "type": "function",
-                        "function": {"name": name}
-                    });
+            match obj.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                "auto" => serde_json::json!("auto"),
+                "any" => serde_json::json!("required"),
+                "none" => serde_json::json!("none"),
+                "tool" => {
+                    if let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
+                        return serde_json::json!({
+                            "type": "function",
+                            "function": {"name": name}
+                        });
+                    }
+                    tc.clone()
                 }
+                _ => tc.clone(),
             }
-            tc.clone()
         }
         _ => tc.clone(),
     }
@@ -841,7 +857,7 @@ mod tests {
         });
         let openai = anthropic_request_to_openai(&anthropic);
         assert_eq!(openai["model"], "glm-5");
-        assert_eq!(openai["max_tokens"], 1024);
+        assert_eq!(openai["max_completion_tokens"], 1024);
         assert_eq!(openai["messages"][0]["content"], "Hello");
     }
 
@@ -855,6 +871,28 @@ mod tests {
         let openai = anthropic_request_to_openai(&anthropic);
         assert_eq!(openai["messages"][0]["role"], "system");
         assert_eq!(openai["messages"][1]["role"], "user");
+        assert!(openai.get("system").is_none());
+    }
+
+    #[test]
+    fn test_anthropic_only_fields_stripped() {
+        let anthropic = json!({
+            "model": "glm-5",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 1024,
+            "thinking": {"type": "enabled", "budget_tokens": 10000},
+            "top_k": 40,
+            "metadata": {"user_id": "123"},
+            "stop_sequences": ["END"]
+        });
+        let openai = anthropic_request_to_openai(&anthropic);
+        assert_eq!(openai["max_completion_tokens"], 1024);
+        assert!(openai.get("max_tokens").is_none(), "max_tokens should be converted to max_completion_tokens");
+        assert!(openai.get("thinking").is_none(), "thinking should be stripped");
+        assert!(openai.get("top_k").is_none(), "top_k should be stripped");
+        assert!(openai.get("metadata").is_none(), "metadata should be stripped");
+        assert!(openai.get("stop_sequences").is_none(), "stop_sequences should be converted to stop");
+        assert_eq!(openai["stop"], json!(["END"]));
     }
 
     #[test]

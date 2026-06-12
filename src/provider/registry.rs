@@ -64,6 +64,19 @@ impl ProviderRegistry {
     ) {
         let mut inner = self.inner.write().await;
 
+        // Track which providers are in this update
+        let active_providers: std::collections::HashSet<_> = models_by_provider.keys().cloned().collect();
+        
+        // Remove stale providers that are no longer in discovery
+        let previous_count = inner.providers.len();
+        inner.providers.retain(|name, _| active_providers.contains(name));
+        inner.model_to_provider.retain(|_, provider| active_providers.contains(provider));
+        
+        let removed_count = previous_count - inner.providers.len();
+        if removed_count > 0 {
+            info!("Removed {} stale providers from registry", removed_count);
+        }
+
         for (provider_id, model_ids) in models_by_provider {
             let provider_exists = inner.providers.contains_key(provider_id);
 
@@ -89,6 +102,22 @@ impl ProviderRegistry {
                 inner.model_to_provider.insert(model_id.clone(), provider_id.clone());
             }
         }
+
+        let all_valid_models: std::collections::HashSet<String> = inner
+            .providers
+            .values()
+            .flat_map(|p| p.models.iter().cloned())
+            .collect();
+
+        let known_providers: std::collections::HashSet<String> = inner
+            .providers
+            .keys()
+            .cloned()
+            .collect();
+
+        inner.model_to_provider.retain(|model, provider_id| {
+            all_valid_models.contains(model) && known_providers.contains(provider_id)
+        });
 
         let total_models = inner.model_to_provider.len();
         let total_providers = inner.providers.len();
