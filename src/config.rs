@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 
+use crate::security::{is_internal_ip_strict_host as is_provider_internal_ip, is_metadata_endpoint as is_provider_metadata_endpoint};
+
 /// Aperture gateway configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ApertureConfig {
@@ -646,41 +648,6 @@ impl Config {
         tracing::info!("Configuration saved to {}", path);
         Ok(())
     }
-}
-
-/// Check if a host is an internal IP address (for provider validation)
-/// Note: Carrier-grade NAT (100.64.0.0/10) is NOT blocked here because
-/// Tailscale and other VPN mesh networks use this range legitimately.
-fn is_provider_internal_ip(host: &str) -> bool {
-    host.parse::<std::net::IpAddr>()
-        .map(|ip| match ip {
-            std::net::IpAddr::V4(v4) => {
-                // Block standard private ranges and loopback
-                // Note: CGN (100.64.0.0/10) is allowed for Tailscale/VPN
-                v4.is_private() || v4.is_loopback() || v4.is_link_local()
-            }
-            std::net::IpAddr::V6(v6) => {
-                // Check for IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
-                if let Some(v4) = v6.to_ipv4_mapped() {
-                    return v4.is_private() || v4.is_loopback() || v4.is_link_local();
-                }
-
-                v6.is_loopback()
-                    || v6.is_unique_local()
-                    || matches!(v6.octets()[0], 0xfe) && (v6.octets()[1] & 0xc0) == 0x80
-                    || v6.is_multicast()
-            }
-        })
-        .unwrap_or(false)
-}
-
-/// Check if a host is a metadata endpoint (exact match to prevent bypass via subdomains)
-fn is_provider_metadata_endpoint(host: &str) -> bool {
-    host == "169.254.169.254"
-        || host == "[::ffff:169.254.169.254]"
-        || host == "100.100.100.200"
-        || host == "metadata.google.internal"
-        || host == "metadata.azure.com"
 }
 
 #[cfg(test)]

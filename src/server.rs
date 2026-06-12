@@ -104,7 +104,9 @@ pub struct AppState {
     pub provider_registry: Arc<ProviderRegistry>,
     pub cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub refresh_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub rate_limit_cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub shutdown_token: CancellationToken,
+    pub rate_limiter: crate::middleware::RateLimiter,
 }
 
 impl AppState {
@@ -117,7 +119,9 @@ impl AppState {
         provider_registry: Arc<ProviderRegistry>,
         cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
         refresh_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+        rate_limit_cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
         shutdown_token: CancellationToken,
+        rate_limiter: crate::middleware::RateLimiter,
     ) -> Self {
         Self {
             config,
@@ -127,7 +131,9 @@ impl AppState {
             provider_registry,
             cleanup_handle,
             refresh_handle,
+            rate_limit_cleanup_handle,
             shutdown_token,
+            rate_limiter,
         }
     }
 }
@@ -197,11 +203,11 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
 }
 
 /// Create the router with all routes and middleware
-/// Returns (Router, CancellationToken) for graceful shutdown
+/// Returns (Router, CancellationToken, cleanup_handle, refresh_handle, rate_limit_cleanup_handle) for graceful shutdown
 pub fn create_router(
     config: Config,
     discovery: Arc<ModelDiscovery>,
-) -> (Router, CancellationToken) {
+) -> (Router, CancellationToken, Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>, Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>, Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>) {
     info!("Creating router with authentication and CORS layers");
 
     // Create provider registry with Aperture URL for auto-discovery
@@ -235,11 +241,20 @@ pub fn create_router(
 
     // Setup CORS
     let cors = create_cors_layer(&config.cors);
+    
+    // Create rate limiter for per-client request limiting
+    let rate_limiter = crate::middleware::RateLimiter::new(
+        100,
+        std::time::Duration::from_secs(60),
+    );
+
+    // Start rate limiter cleanup task
+    let rate_limit_cleanup_handle = Arc::new(Mutex::new(Some(rate_limiter.start_cleanup_task())));
 
     // Create shared config and auth state (single instance each)
     let shared_config = Arc::new(config.clone());
     let shared_auth_state = Arc::new(auth_state.clone());
-
+    
     // Create a single AppState wrapped in Arc (reduces clones)
     let app_state = Arc::new(AppState::new(
         shared_config.clone(),
@@ -249,7 +264,9 @@ pub fn create_router(
         provider_registry.clone(),
         cleanup_handle.clone(),
         refresh_handle.clone(),
+        rate_limit_cleanup_handle.clone(),
         shutdown_token.clone(),
+        rate_limiter.clone(),
     ));
 
     // Admin routes - uses same state via Arc clone (cheap reference increment)
@@ -281,7 +298,7 @@ pub fn create_router(
             post(crate::routes::messages::anthropic_messages),
         )
         .route_layer(axum::middleware::from_fn_with_state(
-            (Arc::clone(&shared_config), Arc::clone(&shared_auth_state)),
+            (Arc::clone(&shared_config), Arc::clone(&shared_auth_state), rate_limiter),
             crate::middleware::auth_middleware,
         ))
         .with_state((*app_state).clone());
@@ -312,6 +329,14 @@ pub fn create_router(
             axum::http::HeaderName::from_static("strict-transport-security"),
             axum::http::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
         ))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::HeaderName::from_static("referrer-policy"),
+            axum::http::HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::HeaderName::from_static("permissions-policy"),
+            axum::http::HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+        ))
         .layer(RequestBodyLimitLayer::new(
             (config.security.max_body_size_bytes as u64)
                 .try_into()
@@ -319,5 +344,5 @@ pub fn create_router(
         ))
         .layer(cors);
 
-    (router, shutdown_token)
+    (router, shutdown_token, cleanup_handle, refresh_handle, rate_limit_cleanup_handle)
 }

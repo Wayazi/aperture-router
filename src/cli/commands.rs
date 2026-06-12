@@ -410,6 +410,7 @@ pub fn generate_config(
         let api_key = generate_api_key();
         config.security.api_keys = vec![api_key.clone()];
         // Print to stdout (not stderr which may be captured by logging systems)
+        println!("WARNING: The following API key will be displayed. Ensure no one is looking at your screen.");
         println!("🔑 Generated API key: {}", api_key);
         println!("   Save this key securely - it won't be shown again!");
         println!();
