@@ -213,10 +213,7 @@ pub struct RouterHandles {
 }
 
 /// Create the router with all routes and middleware
-pub fn create_router(
-    config: Config,
-    discovery: Arc<ModelDiscovery>,
-) -> RouterHandles {
+pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> RouterHandles {
     info!("Creating router with authentication and CORS layers");
 
     // Create provider registry with Aperture URL for auto-discovery
@@ -240,7 +237,9 @@ pub fn create_router(
     let shutdown_token = CancellationToken::new();
 
     // Start cleanup task for rate limiting
-    let cleanup_handle = Arc::new(Mutex::new(Some(auth_state.start_cleanup_task(shutdown_token.clone()))));
+    let cleanup_handle = Arc::new(Mutex::new(Some(
+        auth_state.start_cleanup_task(shutdown_token.clone()),
+    )));
 
     // Start model refresh task with registry sync and shutdown support
     let refresh_handle = Arc::new(Mutex::new(Some(
@@ -255,7 +254,9 @@ pub fn create_router(
     let rate_limiter = crate::middleware::RateLimiter::new(100, std::time::Duration::from_secs(60));
 
     // Start rate limiter cleanup task
-    let rate_limit_cleanup_handle = Arc::new(Mutex::new(Some(rate_limiter.start_cleanup_task(shutdown_token.clone()))));
+    let rate_limit_cleanup_handle = Arc::new(Mutex::new(Some(
+        rate_limiter.start_cleanup_task(shutdown_token.clone()),
+    )));
 
     // Create shared config and auth state (single instance each)
     let shared_config = Arc::new(config.clone());

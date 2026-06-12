@@ -66,7 +66,10 @@ impl RateLimiter {
         requests.retain(|_, entry| !entry.is_empty());
     }
 
-    pub fn start_cleanup_task(&self, shutdown_token: tokio_util::sync::CancellationToken) -> tokio::task::JoinHandle<()> {
+    pub fn start_cleanup_task(
+        &self,
+        shutdown_token: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
         let requests = self.requests.clone();
         let window = self.window;
 
