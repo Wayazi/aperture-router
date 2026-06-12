@@ -246,8 +246,13 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
     }
 
     // Create router (with auto-refresh background task)
-    let (app, shutdown_token, cleanup_handle, refresh_handle, rate_limit_cleanup_handle) = 
-        server::create_router(config.clone(), Arc::clone(&discovery));
+    let server::RouterHandles {
+        router: app,
+        shutdown_token,
+        cleanup_handle,
+        refresh_handle,
+        rate_limit_cleanup_handle,
+    } = server::create_router(config.clone(), Arc::clone(&discovery));
 
     // Start server with graceful shutdown
     let addr = config.server_addr()?;
@@ -267,28 +272,37 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
 
     // Wait for background tasks to complete
     info!("Waiting for background tasks to complete...");
-    
+
     // Join cleanup task
-    if let Some(handle) = cleanup_handle.lock().unwrap().take() {
-        match handle.await {
-            Ok(()) => info!("Cleanup task completed successfully"),
-            Err(e) => tracing::error!("Cleanup task panicked: {:?}", e),
+    {
+        let handle = cleanup_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            match handle.await {
+                Ok(()) => info!("Cleanup task completed successfully"),
+                Err(e) => tracing::error!("Cleanup task panicked: {:?}", e),
+            }
         }
     }
 
     // Join refresh task
-    if let Some(handle) = refresh_handle.lock().unwrap().take() {
-        match handle.await {
-            Ok(()) => info!("Refresh task completed successfully"),
-            Err(e) => tracing::error!("Refresh task panicked: {:?}", e),
+    {
+        let handle = refresh_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            match handle.await {
+                Ok(()) => info!("Refresh task completed successfully"),
+                Err(e) => tracing::error!("Refresh task panicked: {:?}", e),
+            }
         }
     }
 
     // Join rate limit cleanup task
-    if let Some(handle) = rate_limit_cleanup_handle.lock().unwrap().take() {
-        match handle.await {
-            Ok(()) => info!("Rate limit cleanup task completed successfully"),
-            Err(e) => tracing::error!("Rate limit cleanup task panicked: {:?}", e),
+    {
+        let handle = rate_limit_cleanup_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            match handle.await {
+                Ok(()) => info!("Rate limit cleanup task completed successfully"),
+                Err(e) => tracing::error!("Rate limit cleanup task panicked: {:?}", e),
+            }
         }
     }
 

@@ -17,6 +17,8 @@ use tower_http::{
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+type BackgroundHandle = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
+
 use crate::{
     config::Config, discovery::models::ModelDiscovery, middleware::AuthState,
     proxy::client::ProxyClient, ProviderRegistry,
@@ -202,12 +204,19 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
     }
 }
 
+pub struct RouterHandles {
+    pub router: Router,
+    pub shutdown_token: CancellationToken,
+    pub cleanup_handle: BackgroundHandle,
+    pub refresh_handle: BackgroundHandle,
+    pub rate_limit_cleanup_handle: BackgroundHandle,
+}
+
 /// Create the router with all routes and middleware
-/// Returns (Router, CancellationToken, cleanup_handle, refresh_handle, rate_limit_cleanup_handle) for graceful shutdown
 pub fn create_router(
     config: Config,
     discovery: Arc<ModelDiscovery>,
-) -> (Router, CancellationToken, Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>, Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>, Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>) {
+) -> RouterHandles {
     info!("Creating router with authentication and CORS layers");
 
     // Create provider registry with Aperture URL for auto-discovery
@@ -231,7 +240,7 @@ pub fn create_router(
     let shutdown_token = CancellationToken::new();
 
     // Start cleanup task for rate limiting
-    let cleanup_handle = Arc::new(Mutex::new(Some(auth_state.start_cleanup_task())));
+    let cleanup_handle = Arc::new(Mutex::new(Some(auth_state.start_cleanup_task(shutdown_token.clone()))));
 
     // Start model refresh task with registry sync and shutdown support
     let refresh_handle = Arc::new(Mutex::new(Some(
@@ -241,20 +250,17 @@ pub fn create_router(
 
     // Setup CORS
     let cors = create_cors_layer(&config.cors);
-    
+
     // Create rate limiter for per-client request limiting
-    let rate_limiter = crate::middleware::RateLimiter::new(
-        100,
-        std::time::Duration::from_secs(60),
-    );
+    let rate_limiter = crate::middleware::RateLimiter::new(100, std::time::Duration::from_secs(60));
 
     // Start rate limiter cleanup task
-    let rate_limit_cleanup_handle = Arc::new(Mutex::new(Some(rate_limiter.start_cleanup_task())));
+    let rate_limit_cleanup_handle = Arc::new(Mutex::new(Some(rate_limiter.start_cleanup_task(shutdown_token.clone()))));
 
     // Create shared config and auth state (single instance each)
     let shared_config = Arc::new(config.clone());
     let shared_auth_state = Arc::new(auth_state.clone());
-    
+
     // Create a single AppState wrapped in Arc (reduces clones)
     let app_state = Arc::new(AppState::new(
         shared_config.clone(),
@@ -298,7 +304,11 @@ pub fn create_router(
             post(crate::routes::messages::anthropic_messages),
         )
         .route_layer(axum::middleware::from_fn_with_state(
-            (Arc::clone(&shared_config), Arc::clone(&shared_auth_state), rate_limiter),
+            (
+                Arc::clone(&shared_config),
+                Arc::clone(&shared_auth_state),
+                rate_limiter,
+            ),
             crate::middleware::auth_middleware,
         ))
         .with_state((*app_state).clone());
@@ -344,5 +354,11 @@ pub fn create_router(
         ))
         .layer(cors);
 
-    (router, shutdown_token, cleanup_handle, refresh_handle, rate_limit_cleanup_handle)
+    RouterHandles {
+        router,
+        shutdown_token,
+        cleanup_handle,
+        refresh_handle,
+        rate_limit_cleanup_handle,
+    }
 }

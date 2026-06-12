@@ -69,7 +69,10 @@ pub fn anthropic_request_to_openai(anthropic: &Value) -> Value {
         obj.remove("stop_sequences");
     }
 
-    debug!("Converted OpenAI request fields: {:?}", openai.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+    debug!(
+        "Converted OpenAI request fields: {:?}",
+        openai.as_object().map(|o| o.keys().collect::<Vec<_>>())
+    );
 
     openai
 }
@@ -423,23 +426,21 @@ fn convert_anthropic_tool_choice(tc: &Value) -> Value {
             "none" => serde_json::json!("none"),
             _ => tc.clone(),
         },
-        Value::Object(obj) => {
-            match obj.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-                "auto" => serde_json::json!("auto"),
-                "any" => serde_json::json!("required"),
-                "none" => serde_json::json!("none"),
-                "tool" => {
-                    if let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
-                        return serde_json::json!({
-                            "type": "function",
-                            "function": {"name": name}
-                        });
-                    }
-                    tc.clone()
+        Value::Object(obj) => match obj.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+            "auto" => serde_json::json!("auto"),
+            "any" => serde_json::json!("required"),
+            "none" => serde_json::json!("none"),
+            "tool" => {
+                if let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
+                    return serde_json::json!({
+                        "type": "function",
+                        "function": {"name": name}
+                    });
                 }
-                _ => tc.clone(),
+                tc.clone()
             }
-        }
+            _ => tc.clone(),
+        },
         _ => tc.clone(),
     }
 }
@@ -887,11 +888,23 @@ mod tests {
         });
         let openai = anthropic_request_to_openai(&anthropic);
         assert_eq!(openai["max_completion_tokens"], 1024);
-        assert!(openai.get("max_tokens").is_none(), "max_tokens should be converted to max_completion_tokens");
-        assert!(openai.get("thinking").is_none(), "thinking should be stripped");
+        assert!(
+            openai.get("max_tokens").is_none(),
+            "max_tokens should be converted to max_completion_tokens"
+        );
+        assert!(
+            openai.get("thinking").is_none(),
+            "thinking should be stripped"
+        );
         assert!(openai.get("top_k").is_none(), "top_k should be stripped");
-        assert!(openai.get("metadata").is_none(), "metadata should be stripped");
-        assert!(openai.get("stop_sequences").is_none(), "stop_sequences should be converted to stop");
+        assert!(
+            openai.get("metadata").is_none(),
+            "metadata should be stripped"
+        );
+        assert!(
+            openai.get("stop_sequences").is_none(),
+            "stop_sequences should be converted to stop"
+        );
         assert_eq!(openai["stop"], json!(["END"]));
     }
 
@@ -959,8 +972,12 @@ mod tests {
         let chunk1 = r#"data: {"id":"1","object":"chat.completion.chunk","model":"test","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"}}]}"#;
         let events1 = conv.convert_chunk(&format!("{}\n\n", chunk1));
         assert!(events1.iter().any(|e| e.event_type == "message_start"));
-        assert!(events1.iter().any(|e| e.event_type == "content_block_start"));
-        assert!(events1.iter().any(|e| e.event_type == "content_block_delta"));
+        assert!(events1
+            .iter()
+            .any(|e| e.event_type == "content_block_start"));
+        assert!(events1
+            .iter()
+            .any(|e| e.event_type == "content_block_delta"));
 
         let chunk2 = r#"data: {"id":"1","object":"chat.completion.chunk","model":"test","choices":[{"index":0,"finish_reason":"stop","delta":{}}]}"#;
         let events2 = conv.convert_chunk(&format!("{}\n\n", chunk2));

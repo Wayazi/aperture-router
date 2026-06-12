@@ -142,15 +142,18 @@ impl AuthState {
 
     /// Start background cleanup task with supervision
     /// Returns the task handle for lifecycle management
-    pub fn start_cleanup_task(&self) -> tokio::task::JoinHandle<()> {
+    pub fn start_cleanup_task(&self, shutdown_token: tokio_util::sync::CancellationToken) -> tokio::task::JoinHandle<()> {
         let failed_attempts = self.failed_attempts.clone();
         let window_duration = self.window_duration;
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(300)); // Clean every 5 minutes
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
 
             loop {
-                interval.tick().await; // Wait for interval
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    _ = shutdown_token.cancelled() => break,
+                }
                 let mut attempts = failed_attempts.write().await;
                 let now = Instant::now();
 
@@ -240,7 +243,11 @@ fn extract_client_ip(
 }
 
 pub async fn auth_middleware(
-    State((config, auth, rate_limiter)): State<(Arc<Config>, Arc<AuthState>, crate::middleware::RateLimiter)>,
+    State((config, auth, rate_limiter)): State<(
+        Arc<Config>,
+        Arc<AuthState>,
+        crate::middleware::RateLimiter,
+    )>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
@@ -263,7 +270,10 @@ pub async fn auth_middleware(
 
     // Check if IP is already banned from too many auth failures
     if auth.is_banned(client_ip).await {
-        warn!("Rate-limited authentication attempt from banned IP: {}", client_ip);
+        warn!(
+            "Rate-limited authentication attempt from banned IP: {}",
+            client_ip
+        );
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 

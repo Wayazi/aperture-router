@@ -6,7 +6,7 @@ description = "Universal AI router for Tailscale Aperture"
 license = "MIT"
 repository = "https://github.com/Wayazi/aperture-router"
 authors = ["Wayazi"]
-keywords = ["proxy", "ai", "aperture", "tailscale", "anthropic", "openai"]
+keywords = ["proxy", "ai", "tailscale", "anthropic", "openai"]
 categories = ["web-programming::http-server", "api-bindings"]
 readme = "README.md"
 
