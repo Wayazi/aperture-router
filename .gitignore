@@ -32,3 +32,8 @@ Thumbs.db
 .claude/
 SESSION-*.md
 .pi/
+
+# Agent reports
+*SUMMARY.md
+*REPORT.md
+*IMPLEMENTATION*.md

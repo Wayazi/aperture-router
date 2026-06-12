@@ -6,7 +6,10 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 
-use crate::security::{is_internal_ip_strict_host as is_provider_internal_ip, is_metadata_endpoint as is_provider_metadata_endpoint};
+use crate::security::{
+    is_internal_ip_strict_host as is_provider_internal_ip,
+    is_metadata_endpoint as is_provider_metadata_endpoint,
+};
 
 /// Aperture gateway configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]

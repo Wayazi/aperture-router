@@ -56,7 +56,11 @@ fn build_provider_url(provider: &Provider, default_endpoint: &str) -> String {
     ProviderRegistry::build_endpoint_url(provider, default_endpoint)
 }
 
-fn get_provider_api_key(provider: &Provider, default_key: Option<&String>, gateway_url: &str) -> Option<String> {
+fn get_provider_api_key(
+    provider: &Provider,
+    default_key: Option<&String>,
+    gateway_url: &str,
+) -> Option<String> {
     if provider.api_key.is_some() {
         return provider.api_key.clone();
     }
@@ -115,13 +119,21 @@ async fn try_provider(
     let api_key = get_provider_api_key(provider, proxy_client.api_key(), proxy_client.base_url());
 
     match proxy_client
-        .forward_request_to_url_raw(&url, body.to_vec(), api_key.as_deref(), provider.endpoint_style)
+        .forward_request_to_url_raw(
+            &url,
+            body.to_vec(),
+            api_key.as_deref(),
+            provider.endpoint_style,
+        )
         .await
     {
         Ok(response) => {
             let status = response.status();
             if status.is_server_error() {
-                warn!("Provider '{}' returned {}, will try next", provider.name, status);
+                warn!(
+                    "Provider '{}' returned {}, will try next",
+                    provider.name, status
+                );
                 Err(status)
             } else {
                 Ok(process_upstream_response(response).await)
@@ -133,7 +145,6 @@ async fn try_provider(
         }
     }
 }
-
 
 pub async fn proxy_handler_multi<T>(
     proxy_client: ProxyClient,
@@ -155,7 +166,10 @@ where
     }
 
     if providers.is_empty() {
-        debug!("No provider found for model '{}', using default gateway", model);
+        debug!(
+            "No provider found for model '{}', using default gateway",
+            model
+        );
         return proxy_to_default_gateway(proxy_client, request, default_endpoint).await;
     }
 
@@ -166,23 +180,41 @@ where
 
     if providers.len() == 1 {
         let provider = &providers[0];
-        info!("Routing model '{}' to provider '{}' ({})", model, provider.name, provider.base_url);
+        info!(
+            "Routing model '{}' to provider '{}' ({})",
+            model, provider.name, provider.base_url
+        );
         return match try_provider(&proxy_client, provider, &body, default_endpoint).await {
             Ok(response) => response,
             Err(_) => json_error(StatusCode::BAD_GATEWAY, "Failed to forward request"),
         };
     }
 
-    info!("Routing model '{}' across {} providers (failover enabled)", model, providers.len());
+    info!(
+        "Routing model '{}' across {} providers (failover enabled)",
+        model,
+        providers.len()
+    );
 
     let mut last_error = StatusCode::BAD_GATEWAY;
     for (i, provider) in providers.iter().take(MAX_FAILOVER_ATTEMPTS).enumerate() {
-        debug!("Trying provider {}/{}: '{}' ({})", i + 1, MAX_FAILOVER_ATTEMPTS, provider.name, provider.base_url);
+        debug!(
+            "Trying provider {}/{}: '{}' ({})",
+            i + 1,
+            MAX_FAILOVER_ATTEMPTS,
+            provider.name,
+            provider.base_url
+        );
 
         match try_provider(&proxy_client, provider, &body, default_endpoint).await {
             Ok(response) => {
                 if i > 0 {
-                    info!("Succeeded on provider '{}' (attempt {}/{})", provider.name, i + 1, MAX_FAILOVER_ATTEMPTS);
+                    info!(
+                        "Succeeded on provider '{}' (attempt {}/{})",
+                        provider.name,
+                        i + 1,
+                        MAX_FAILOVER_ATTEMPTS
+                    );
                 }
                 return response;
             }
@@ -192,7 +224,11 @@ where
         }
     }
 
-    error!("All {} providers failed for model '{}'", providers.len(), model);
+    error!(
+        "All {} providers failed for model '{}'",
+        providers.len(),
+        model
+    );
     json_error(last_error, "All providers failed")
 }
 

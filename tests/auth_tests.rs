@@ -98,34 +98,31 @@ mod auth_tests {
     }
 
     #[tokio::test]
-    async fn test_check_and_record_failure_within_limits() {
+    async fn test_record_failure_within_limits() {
         let api_keys = vec!["test-api-key-with-sufficient-entropy-32".to_string()];
         let auth_state = create_auth_state(api_keys);
 
         let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
 
-        // Record several failures within limits
         for i in 0..4 {
-            let result = auth_state.check_and_record_failure(client_ip).await;
+            let result = auth_state.record_failure(client_ip).await;
             assert!(result.is_ok(), "Attempt {} should succeed", i);
         }
     }
 
     #[tokio::test]
-    async fn test_check_and_record_failure_exceeds_limit() {
+    async fn test_record_failure_exceeds_limit() {
         let api_keys = vec!["test-api-key-with-sufficient-entropy-32".to_string()];
         let auth_state = create_auth_state(api_keys);
 
         let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
 
-        // Record failures up to limit
         for _ in 0..5 {
-            let result = auth_state.check_and_record_failure(client_ip).await;
+            let result = auth_state.record_failure(client_ip).await;
             assert!(result.is_ok());
         }
 
-        // Next attempt should fail
-        let result = auth_state.check_and_record_failure(client_ip).await;
+        let result = auth_state.record_failure(client_ip).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), StatusCode::TOO_MANY_REQUESTS);
     }
@@ -137,42 +134,29 @@ mod auth_tests {
 
         let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
 
-        // Record some failures
         for _ in 0..3 {
-            auth_state
-                .check_and_record_failure(client_ip)
-                .await
-                .unwrap();
+            auth_state.record_failure(client_ip).await.unwrap();
         }
 
-        // Record success
         auth_state.record_success(client_ip).await;
 
-        // Should be able to make attempts again
-        let result = auth_state.check_and_record_failure(client_ip).await;
-        assert!(result.is_ok());
+        assert!(!auth_state.is_banned(client_ip).await);
     }
 
     #[tokio::test]
-    async fn test_check_and_record_failure_different_ips() {
+    async fn test_record_failure_different_ips() {
         let api_keys = vec!["test-api-key-with-sufficient-entropy-32".to_string()];
         let auth_state = create_auth_state(api_keys);
 
         let ip1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let ip2 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
 
-        // Each IP should have its own counter
         for _ in 0..5 {
-            auth_state.check_and_record_failure(ip1).await.unwrap();
+            auth_state.record_failure(ip1).await.unwrap();
         }
 
-        // IP1 should be rate limited
-        let result1 = auth_state.check_and_record_failure(ip1).await;
-        assert!(result1.is_err());
-
-        // IP2 should still be able to make attempts
-        let result2 = auth_state.check_and_record_failure(ip2).await;
-        assert!(result2.is_ok());
+        assert!(auth_state.is_banned(ip1).await);
+        assert!(!auth_state.is_banned(ip2).await);
     }
 
     #[tokio::test]
@@ -194,13 +178,11 @@ mod auth_tests {
 
         let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
 
-        // Should fail after 3 attempts
         for _ in 0..3 {
-            assert!(auth_state.check_and_record_failure(client_ip).await.is_ok());
+            assert!(auth_state.record_failure(client_ip).await.is_ok());
         }
 
-        let result = auth_state.check_and_record_failure(client_ip).await;
-        assert!(result.is_err());
+        assert!(auth_state.is_banned(client_ip).await);
     }
 
     #[tokio::test]
@@ -242,7 +224,7 @@ mod auth_tests {
         let auth_state = create_auth_state(api_keys);
 
         // This should not panic
-        auth_state.start_cleanup_task();
+        auth_state.start_cleanup_task(tokio_util::sync::CancellationToken::new());
 
         // Give it a moment to start
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -288,17 +270,14 @@ mod auth_tests {
             IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)),
         ];
 
-        // Each IP should be able to make 5 attempts
         for ip in &ips {
             for _ in 0..5 {
-                assert!(auth_state.check_and_record_failure(*ip).await.is_ok());
+                assert!(auth_state.record_failure(*ip).await.is_ok());
             }
         }
 
-        // Now all should be rate limited
         for ip in &ips {
-            let result = auth_state.check_and_record_failure(*ip).await;
-            assert!(result.is_err());
+            assert!(auth_state.is_banned(*ip).await);
         }
     }
 

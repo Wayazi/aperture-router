@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 aperture-router contributors
 
+use axum::http::StatusCode;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use axum::http::StatusCode;
 use tracing::debug;
 
 const MAX_TRACKED_IPS: usize = 10000;
@@ -58,15 +58,15 @@ impl RateLimiter {
     pub async fn cleanup_expired(&self) {
         let mut requests = self.requests.write().await;
         let now = Instant::now();
-        
+
         for entry in requests.values_mut() {
             entry.retain(|&time| now.duration_since(time) < self.window);
         }
-        
+
         requests.retain(|_, entry| !entry.is_empty());
     }
 
-    pub fn start_cleanup_task(&self) -> tokio::task::JoinHandle<()> {
+    pub fn start_cleanup_task(&self, shutdown_token: tokio_util::sync::CancellationToken) -> tokio::task::JoinHandle<()> {
         let requests = self.requests.clone();
         let window = self.window;
 
@@ -74,7 +74,10 @@ impl RateLimiter {
             let mut interval = tokio::time::interval(Duration::from_secs(300));
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    _ = shutdown_token.cancelled() => break,
+                }
                 let mut reqs = requests.write().await;
                 let now = Instant::now();
 
@@ -101,76 +104,85 @@ impl Clone for RateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
     async fn test_rate_limit_allows_within_limit() {
         let limiter = RateLimiter::new(10, Duration::from_secs(60));
         let ip = "192.168.1.1".parse().unwrap();
-        
+
         for _ in 0..10 {
             assert!(limiter.check_rate_limit(ip).await.is_ok());
         }
     }
-    
+
     #[tokio::test]
     async fn test_rate_limit_blocks_over_limit() {
         let limiter = RateLimiter::new(5, Duration::from_secs(60));
         let ip = "192.168.1.1".parse().unwrap();
-        
+
         for _ in 0..5 {
             limiter.check_rate_limit(ip).await.ok();
         }
-        
+
         // 6th request should fail
         assert_eq!(
             limiter.check_rate_limit(ip).await,
             Err(StatusCode::TOO_MANY_REQUESTS)
         );
     }
-    
+
     #[tokio::test]
     async fn test_rate_limit_independent_per_ip() {
         let limiter = RateLimiter::new(2, Duration::from_secs(60));
         let ip1 = "192.168.1.1".parse().unwrap();
         let ip2 = "192.168.1.2".parse().unwrap();
-        
+
         assert!(limiter.check_rate_limit(ip1).await.is_ok());
         assert!(limiter.check_rate_limit(ip1).await.is_ok());
-        assert_eq!(limiter.check_rate_limit(ip1).await, Err(StatusCode::TOO_MANY_REQUESTS));
-        
+        assert_eq!(
+            limiter.check_rate_limit(ip1).await,
+            Err(StatusCode::TOO_MANY_REQUESTS)
+        );
+
         // ip2 should still be allowed
         assert!(limiter.check_rate_limit(ip2).await.is_ok());
         assert!(limiter.check_rate_limit(ip2).await.is_ok());
-        assert_eq!(limiter.check_rate_limit(ip2).await, Err(StatusCode::TOO_MANY_REQUESTS));
+        assert_eq!(
+            limiter.check_rate_limit(ip2).await,
+            Err(StatusCode::TOO_MANY_REQUESTS)
+        );
     }
-    
+
     #[tokio::test]
     async fn test_rate_limit_memory_cap() {
         // Create limiter with small capacity for testing
         let limiter = RateLimiter::new(1, Duration::from_secs(60));
-        
+
         // Add IPs up to just below the cap
         for i in 0..(MAX_TRACKED_IPS - 1) {
             let ip: IpAddr = format!("192.168.{}.{}", i / 256, i % 256).parse().unwrap();
             assert!(limiter.check_rate_limit(ip).await.is_ok());
         }
-        
+
         // Verify we can still add new IPs (oldest should be evicted)
         let new_ip: IpAddr = "10.0.0.1".parse().unwrap();
         assert!(limiter.check_rate_limit(new_ip).await.is_ok());
-        
+
         // Verify the map doesn't exceed the cap
         let requests = limiter.requests.read().await;
         assert!(requests.len() <= MAX_TRACKED_IPS);
     }
-    
+
     #[tokio::test]
     async fn test_rate_limit_window_expiry() {
         let limiter = RateLimiter::new(1, Duration::from_millis(100));
         let ip = "192.168.1.1".parse().unwrap();
 
         assert!(limiter.check_rate_limit(ip).await.is_ok());
-        assert_eq!(limiter.check_rate_limit(ip).await, Err(StatusCode::TOO_MANY_REQUESTS));
+        assert_eq!(
+            limiter.check_rate_limit(ip).await,
+            Err(StatusCode::TOO_MANY_REQUESTS)
+        );
 
         tokio::time::sleep(Duration::from_millis(150)).await;
 

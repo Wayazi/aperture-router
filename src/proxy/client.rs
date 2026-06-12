@@ -407,7 +407,10 @@ impl ProxyClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            error!("Upstream streaming request to {} failed with status: {} body: {}", url, status, body);
+            error!(
+                "Upstream streaming request to {} failed with status: {} body: {}",
+                url, status, body
+            );
             return Err(anyhow::anyhow!("Service temporarily unavailable"));
         }
 
