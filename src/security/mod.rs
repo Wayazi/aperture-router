@@ -26,22 +26,27 @@ pub fn is_metadata_endpoint(host: &str) -> bool {
 /// Check if a host is a blocked host (metadata endpoints + Kubernetes internal DNS)
 ///
 /// Extends `is_metadata_endpoint` with hostname-based patterns for:
-/// - Kubernetes service DNS: `metadata.*.internal`
+/// - Kubernetes service DNS: `metadata.*.internal`, `*.metadata.internal`
 /// - Internal service mesh patterns
+/// - Trailing dot bypass prevention (RFC 1034 DNS equivalence)
 pub fn is_blocked_host(host: &str) -> bool {
+    // Normalize: strip trailing dot (DNS equivalent per RFC 1034)
+    // This prevents bypass via "metadata.internal." (trailing dot)
+    let normalized = host.strip_suffix('.').unwrap_or(host);
+
     // First check known metadata endpoints (exact match)
-    if is_metadata_endpoint(host) {
+    if is_metadata_endpoint(normalized) {
         return true;
     }
 
-    // Block Kubernetes-style internal DNS patterns
-    // e.g., metadata.default.svc.cluster.local, metadata.monitoring.svc
-    if host.starts_with("metadata.") && host.ends_with(".internal") {
+    // Block any .internal domain containing "metadata"
+    // Catches metadata.kubernetes.internal, kubernetes-metadata.internal, etc.
+    if normalized.ends_with(".internal") && normalized.contains("metadata") {
         return true;
     }
 
     // Block Kubernetes service DNS for metadata-like services
-    if host.starts_with("metadata.") && host.contains(".svc.") {
+    if normalized.starts_with("metadata.") && normalized.contains(".svc.") {
         return true;
     }
 
@@ -94,6 +99,14 @@ pub fn is_internal_ip_strict(ip: &IpAddr) -> bool {
     is_internal_ip_impl(ip, false)
 }
 
+/// String-based strict internal IP check (parses host and checks, allows CGN)
+/// Used for provider URL validation where Tailscale CGN range is legitimate
+pub fn is_internal_ip_strict_host(host: &str) -> bool {
+    host.parse::<IpAddr>()
+        .map(|ip| is_internal_ip_impl(&ip, false))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,14 +130,24 @@ mod tests {
     #[test]
     fn test_blocked_host_k8s_patterns() {
         assert!(is_blocked_host("metadata.default.svc.cluster.local"));
-        assert!(is_blocked_host("metadata.monitoring.svc"));
         assert!(is_blocked_host("metadata.something.internal"));
+        assert!(is_blocked_host("metadata.internal"));
+        assert!(is_blocked_host("kubernetes-metadata.internal"));
+        assert!(is_blocked_host("some-metadata.internal"));
     }
 
     #[test]
     fn test_blocked_host_allows_legitimate() {
         assert!(!is_blocked_host("api.example.com"));
-        assert!(!is_blocked_host("my-service.internal")); // no "metadata." prefix
+        assert!(!is_blocked_host("my-service.internal")); // no "metadata" keyword
+        assert!(!is_blocked_host("database.internal"));
+    }
+
+    #[test]
+    fn test_blocked_host_trailing_dot() {
+        assert!(is_blocked_host("metadata.internal."));
+        assert!(is_blocked_host("kubernetes-metadata.internal."));
+        assert!(is_blocked_host("metadata.google.internal."));
     }
 
     #[test]

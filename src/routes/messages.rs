@@ -13,7 +13,7 @@ use axum::{
 use futures::stream::{self, Stream, StreamExt};
 use http::StatusCode;
 use serde_json::Value;
-use std::{convert::Infallible, sync::Mutex, time::Duration};
+use std::{convert::Infallible, time::Duration};
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -204,6 +204,8 @@ async fn handle_non_streaming_conversion(
         }
     };
 
+    debug!("Converted non-streaming request body (first 2000 chars): {:.2000}", String::from_utf8_lossy(&openai_body));
+
     if providers.is_empty() {
         debug!("No providers found, forwarding to default gateway");
         match state
@@ -304,6 +306,8 @@ async fn handle_streaming_conversion(
         StatusCode::BAD_REQUEST
     })?;
 
+    debug!("Converted streaming request body (first 2000 chars): {:.2000}", String::from_utf8_lossy(&openai_body));
+
     let raw_stream = if providers.is_empty() {
         state
             .proxy_client
@@ -353,7 +357,7 @@ fn build_anthropic_sse(
     raw_stream: std::pin::Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>>,
     model: String,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let converter = Mutex::new(OpenAIToAnthropicStreamConverter::new(model));
+    let converter = std::sync::Mutex::new(OpenAIToAnthropicStreamConverter::new(model));
 
     let sse_stream = raw_stream.flat_map(move |chunk| {
         let events: Vec<Result<Event, Infallible>> = match chunk {
@@ -389,37 +393,37 @@ pub async fn anthropic_messages(
         return *response;
     }
 
-    // Validate max_tokens (Anthropic requires > 0)
-    if request.max_tokens == 0 {
-        warn!("max_tokens is 0 or missing");
-        return (
-            StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({
-                "error": {
-                    "message": "max_tokens is required and must be greater than 0",
-                    "type": "invalid_request_error",
-                    "code": "invalid_max_tokens"
-                }
-            })),
-        )
-            .into_response();
-    }
-
-    // Validate max_tokens upper bound
+    // Validate max_tokens if provided (must be > 0 and within limit)
     const MAX_TOKENS_LIMIT: u32 = 1_000_000;
-    if request.max_tokens > MAX_TOKENS_LIMIT {
-        warn!("max_tokens exceeds limit: {}", request.max_tokens);
-        return (
-            StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({
-                "error": {
-                    "message": format!("max_tokens exceeds limit of {}", MAX_TOKENS_LIMIT),
-                    "type": "invalid_request_error",
-                    "code": "invalid_max_tokens"
-                }
-            })),
-        )
-            .into_response();
+    if let Some(max_tokens) = request.max_tokens {
+        if max_tokens == 0 {
+            warn!("max_tokens is 0");
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({
+                    "error": {
+                        "message": "max_tokens must be greater than 0",
+                        "type": "invalid_request_error",
+                        "code": "invalid_max_tokens"
+                    }
+                })),
+            )
+                .into_response();
+        }
+        if max_tokens > MAX_TOKENS_LIMIT {
+            warn!("max_tokens exceeds limit: {}", max_tokens);
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({
+                    "error": {
+                        "message": format!("max_tokens exceeds limit of {}", MAX_TOKENS_LIMIT),
+                        "type": "invalid_request_error",
+                        "code": "invalid_max_tokens"
+                    }
+                })),
+            )
+                .into_response();
+        }
     }
 
     // Validate messages
