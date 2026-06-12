@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-12
+
+### Added
+- **Anthropic ↔ OpenAI Format Conversion** - `/v1/messages` now converts Anthropic requests to OpenAI format and responses back, enabling any OpenAI-compatible provider to serve Anthropic clients
+- **Stream Converter** - Real-time SSE conversion from OpenAI streaming chunks to Anthropic streaming events
+- **Per-Client Rate Limiter** - Separate request rate limiting middleware (`RateLimiter`) with configurable limits and memory cap (10K IPs)
+- **Session ID Tracking** - `X-Session-ID` header for grouping requests across a client session
+- **RouterHandles Struct** - Clean return type from `create_router()` replacing complex tuple
+- **Background Task Shutdown** - All cleanup tasks now respect `CancellationToken` for graceful shutdown
+- **CLI API Key Warning** - Warns user before displaying generated API key
+- **Referrer-Policy Header** - `strict-origin-when-cross-origin`
+- **Permissions-Policy Header** - `camera=(), microphone=(), geolocation=()`
+- **`is_internal_ip_strict_host`** - String-based strict IP check for provider URL validation
+
+### Changed
+- **SSRF Functions Consolidated** - `src/security/mod.rs` is now the single source of truth; duplicates removed from `proxy/client.rs`, `config.rs`, and `cli/security.rs`
+- **`is_blocked_host` Enhanced** - Now includes trailing dot normalization (RFC 1034) and broader Kubernetes metadata DNS patterns
+- **`max_tokens` Type Changed** - Anthropic `MessageRequest.max_tokens` changed from `u32` (defaulting to 0) to `Option<u32>` — absent is now valid
+- **Auth State Refactored** - `check_and_record_failure()` split into `is_banned()` + `record_failure()` for clearer flow
+- **Dependencies Updated** - axum 0.8.9, tokio 1.52.3, tower-http 0.6.11, and 40+ other crates updated
+- **Stream Buffer Overflow Protection** - 1MB line buffer limit in stream converter
+
+### Security
+- **Timing-Safe Comparison Verified** - Bitwise OR with `u8` confirmed constant-time (no short-circuit)
+- **Admin Auth Hardened** - Dev mode bypass (`APERTURE_ALLOW_DEV_ADMIN`) removed from admin middleware
+- **SSRF Deduplication** - Eliminated 3 copies of SSRF functions with different IPv6 link-local detection logic; canonical version uses `is_unicast_link_local()`
+- **Yanked Dependency Fixed** - `unicode-segmentation` updated from v1.13.1 (yanked) to v1.13.3
+- **`await_holding_lock` Fixed** - Mutex guards dropped before `.await` points in shutdown handler
+
+### Tests
+- **22 Auth Tests** - Including constant-time comparison, admin key separation, per-IP tracking
+- **18 Integration Tests** - Session ID, CORS, auth flows, concurrent requests
+- **77 Library Tests** - All passing
+
 ## [0.2.0] - 2026-03-26
 
 ### Added
@@ -149,6 +183,7 @@ aperture-router --debug
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-[Unreleased]: https://github.com/Wayazi/aperture-router/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Wayazi/aperture-router/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Wayazi/aperture-router/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Wayazi/aperture-router/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Wayazi/aperture-router/releases/tag/v0.1.0
