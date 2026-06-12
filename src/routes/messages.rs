@@ -25,10 +25,11 @@ use crate::{
     server::AppState,
     types::anthropic::MessageRequest,
     types::conversion::{
-        anthropic_request_to_openai, openai_response_to_anthropic,
-        OpenAIToAnthropicStreamConverter,
+        anthropic_request_to_openai, openai_response_to_anthropic, OpenAIToAnthropicStreamConverter,
     },
-    types::validation::{validate_message_content, validate_role, validate_temperature, validate_top_p},
+    types::validation::{
+        validate_message_content, validate_role, validate_temperature, validate_top_p,
+    },
     ProviderRegistry,
 };
 
@@ -115,7 +116,11 @@ async fn try_provider_non_streaming(
     let url = ProviderRegistry::build_endpoint_url(provider, "v1/chat/completions");
     debug!("Built URL for Anthropic-converted request: {}", url);
 
-    let api_key = safe_api_key(provider, state.proxy_client.api_key(), state.proxy_client.base_url());
+    let api_key = safe_api_key(
+        provider,
+        state.proxy_client.api_key(),
+        state.proxy_client.base_url(),
+    );
 
     match state
         .proxy_client
@@ -125,7 +130,10 @@ async fn try_provider_non_streaming(
         Ok(response) => {
             let status = response.status();
             if status.is_server_error() {
-                warn!("Provider '{}' returned {}, will try next", provider.name, status);
+                warn!(
+                    "Provider '{}' returned {}, will try next",
+                    provider.name, status
+                );
                 return Err(status);
             }
 
@@ -174,7 +182,11 @@ async fn try_provider_streaming(
     openai_body: &[u8],
 ) -> Result<std::pin::Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>>, StatusCode> {
     let url = ProviderRegistry::build_endpoint_url(provider, "v1/chat/completions");
-    let api_key = safe_api_key(provider, state.proxy_client.api_key(), state.proxy_client.base_url());
+    let api_key = safe_api_key(
+        provider,
+        state.proxy_client.api_key(),
+        state.proxy_client.base_url(),
+    );
 
     match state
         .proxy_client
@@ -204,7 +216,10 @@ async fn handle_non_streaming_conversion(
         }
     };
 
-    debug!("Converted non-streaming request body (first 2000 chars): {:.2000}", String::from_utf8_lossy(&openai_body));
+    debug!(
+        "Converted non-streaming request body (first 2000 chars): {:.2000}",
+        String::from_utf8_lossy(&openai_body)
+    );
 
     if providers.is_empty() {
         debug!("No providers found, forwarding to default gateway");
@@ -225,18 +240,16 @@ async fn handle_non_streaming_conversion(
                 match serde_json::from_str::<Value>(&body) {
                     Ok(openai_resp) => {
                         let anthropic_resp = openai_response_to_anthropic(&openai_resp);
-                        let resp_body =
-                            serde_json::to_string(&anthropic_resp).unwrap_or(body);
+                        let resp_body = serde_json::to_string(&anthropic_resp).unwrap_or(body);
                         Response::builder()
                             .status(StatusCode::OK)
                             .header("content-type", "application/json")
                             .body(Body::from(resp_body))
                             .expect("failed to build response")
                     }
-                    Err(_) => anthropic_server_error(
-                        StatusCode::BAD_GATEWAY,
-                        "Invalid upstream response",
-                    ),
+                    Err(_) => {
+                        anthropic_server_error(StatusCode::BAD_GATEWAY, "Invalid upstream response")
+                    }
                 }
             }
             Err(e) => {
@@ -302,11 +315,17 @@ async fn handle_streaming_conversion(
     openai_request["stream"] = Value::Bool(true);
 
     let openai_body = serde_json::to_vec(&openai_request).map_err(|e| {
-        error!("Failed to serialize converted streaming OpenAI request: {}", e);
+        error!(
+            "Failed to serialize converted streaming OpenAI request: {}",
+            e
+        );
         StatusCode::BAD_REQUEST
     })?;
 
-    debug!("Converted streaming request body (first 2000 chars): {:.2000}", String::from_utf8_lossy(&openai_body));
+    debug!(
+        "Converted streaming request body (first 2000 chars): {:.2000}",
+        String::from_utf8_lossy(&openai_body)
+    );
 
     let raw_stream = if providers.is_empty() {
         state
@@ -561,7 +580,10 @@ pub async fn anthropic_messages(
     let anthropic_value = match serde_json::to_value(&request) {
         Ok(v) => v,
         Err(e) => {
-            warn!("Failed to serialize Anthropic request for conversion: {}", e);
+            warn!(
+                "Failed to serialize Anthropic request for conversion: {}",
+                e
+            );
             return anthropic_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_request_error",

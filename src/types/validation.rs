@@ -30,7 +30,10 @@ pub fn validate_model_name(name: &str) -> Result<(), String> {
 pub fn validate_role(role: &str) -> Result<(), String> {
     match role {
         "system" | "user" | "assistant" | "tool" => Ok(()),
-        _ => Err(format!("Invalid role '{}'. Must be 'system', 'user', 'assistant', or 'tool'", role)),
+        _ => Err(format!(
+            "Invalid role '{}'. Must be 'system', 'user', 'assistant', or 'tool'",
+            role
+        )),
     }
 }
 
@@ -63,10 +66,7 @@ pub fn validate_temperature(temperature: f32) -> Result<(), String> {
         return Err("temperature must be non-negative".to_string());
     }
     if temperature > 2.0 {
-        return Err(format!(
-            "temperature too high ({}, max 2.0)",
-            temperature
-        ));
+        return Err(format!("temperature too high ({}, max 2.0)", temperature));
     }
     Ok(())
 }

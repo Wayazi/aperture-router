@@ -65,13 +65,18 @@ impl ProviderRegistry {
         let mut inner = self.inner.write().await;
 
         // Track which providers are in this update
-        let active_providers: std::collections::HashSet<_> = models_by_provider.keys().cloned().collect();
-        
+        let active_providers: std::collections::HashSet<_> =
+            models_by_provider.keys().cloned().collect();
+
         // Remove stale providers that are no longer in discovery
         let previous_count = inner.providers.len();
-        inner.providers.retain(|name, _| active_providers.contains(name));
-        inner.model_to_provider.retain(|_, provider| active_providers.contains(provider));
-        
+        inner
+            .providers
+            .retain(|name, _| active_providers.contains(name));
+        inner
+            .model_to_provider
+            .retain(|_, provider| active_providers.contains(provider));
+
         let removed_count = previous_count - inner.providers.len();
         if removed_count > 0 {
             info!("Removed {} stale providers from registry", removed_count);
@@ -91,7 +96,11 @@ impl ProviderRegistry {
                 };
 
                 inner.providers.insert(provider_id.clone(), new_provider);
-                info!("Auto-added provider '{}' with {} models", provider_id, model_ids.len());
+                info!(
+                    "Auto-added provider '{}' with {} models",
+                    provider_id,
+                    model_ids.len()
+                );
             } else {
                 if let Some(provider) = inner.providers.get_mut(provider_id) {
                     provider.models = model_ids.clone();
@@ -99,7 +108,9 @@ impl ProviderRegistry {
             }
 
             for model_id in model_ids {
-                inner.model_to_provider.insert(model_id.clone(), provider_id.clone());
+                inner
+                    .model_to_provider
+                    .insert(model_id.clone(), provider_id.clone());
             }
         }
 
@@ -109,11 +120,8 @@ impl ProviderRegistry {
             .flat_map(|p| p.models.iter().cloned())
             .collect();
 
-        let known_providers: std::collections::HashSet<String> = inner
-            .providers
-            .keys()
-            .cloned()
-            .collect();
+        let known_providers: std::collections::HashSet<String> =
+            inner.providers.keys().cloned().collect();
 
         inner.model_to_provider.retain(|model, provider_id| {
             all_valid_models.contains(model) && known_providers.contains(provider_id)
