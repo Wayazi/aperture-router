@@ -142,7 +142,10 @@ impl AuthState {
 
     /// Start background cleanup task with supervision
     /// Returns the task handle for lifecycle management
-    pub fn start_cleanup_task(&self, shutdown_token: tokio_util::sync::CancellationToken) -> tokio::task::JoinHandle<()> {
+    pub fn start_cleanup_task(
+        &self,
+        shutdown_token: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
         let failed_attempts = self.failed_attempts.clone();
         let window_duration = self.window_duration;
 

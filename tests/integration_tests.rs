@@ -12,7 +12,11 @@ use tower::ServiceExt;
 use wiremock::matchers::{method, path};
 use wiremock::{MockServer, ResponseTemplate};
 
-use aperture_router::{config::Config, discovery::models::ModelDiscovery, server::{self, create_router}};
+use aperture_router::{
+    config::Config,
+    discovery::models::ModelDiscovery,
+    server::{self, create_router},
+};
 
 fn create_test_router(config: Config, discovery: std::sync::Arc<ModelDiscovery>) -> axum::Router {
     let server::RouterHandles { router, .. } = create_router(config, discovery);
