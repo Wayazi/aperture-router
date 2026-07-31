@@ -33,7 +33,7 @@ fn hash_api_key(key: &str) -> String {
 const MAX_TRACKED_IPS: usize = 10000;
 
 /// Authentication state with rate limiting
-/// Uses Zeroizing<String> to securely wipe API keys from memory on drop
+/// Uses `Zeroizing<String>` to securely wipe API keys from memory on drop
 #[derive(Clone)]
 pub struct AuthState {
     pub api_keys: Vec<Zeroizing<String>>,
@@ -79,8 +79,10 @@ impl AuthState {
     }
 
     /// Check if authentication is enabled
+    /// Returns true if either regular API keys OR admin API keys are configured
+    /// This ensures auth is required even if only admin keys are set
     pub fn is_enabled(&self) -> bool {
-        !self.api_keys.is_empty()
+        !self.api_keys.is_empty() || !self.admin_api_keys.is_empty()
     }
 
     /// Check if admin authentication is enabled
@@ -88,16 +90,26 @@ impl AuthState {
         !self.admin_api_keys.is_empty()
     }
 
-    /// Check rate limit and record failure atomically
-    /// Evicts oldest entries when MAX_TRACKED_IPS is exceeded to prevent memory exhaustion
-    pub async fn check_and_record_failure(&self, client_ip: IpAddr) -> Result<(), StatusCode> {
+    pub async fn is_banned(&self, client_ip: IpAddr) -> bool {
+        let attempts = self.failed_attempts.read().await;
+        if let Some(attempt_times) = attempts.get(&client_ip) {
+            let now = Instant::now();
+            let recent_count = attempt_times
+                .iter()
+                .filter(|t| now.duration_since(**t) < self.window_duration)
+                .count();
+            recent_count >= self.max_attempts
+        } else {
+            false
+        }
+    }
+
+    pub async fn record_failure(&self, client_ip: IpAddr) -> Result<(), StatusCode> {
         let mut attempts = self.failed_attempts.write().await;
 
         let now = Instant::now();
 
-        // Evict oldest entries if we've hit the IP tracking cap
         if attempts.len() >= MAX_TRACKED_IPS && !attempts.contains_key(&client_ip) {
-            // Find and remove the IP with the oldest most-recent attempt
             if let Some(oldest_ip) = attempts
                 .iter()
                 .filter_map(|(ip, times)| times.last().map(|t| (*ip, *t)))
@@ -114,17 +126,13 @@ impl AuthState {
 
         let attempt_times = attempts.entry(client_ip).or_insert_with(Vec::new);
 
-        // Remove old attempts outside the window
         attempt_times.retain(|timestamp| now.duration_since(*timestamp) < self.window_duration);
 
-        // Check if too many attempts in window
         if attempt_times.len() >= self.max_attempts {
-            // Don't add new attempt since we're at limit
             return Err(StatusCode::TOO_MANY_REQUESTS);
         }
 
-        // Add this attempt
-        attempt_times.push(Instant::now());
+        attempt_times.push(now);
 
         Ok(())
     }
@@ -136,20 +144,26 @@ impl AuthState {
 
     /// Start background cleanup task with supervision
     /// Returns the task handle for lifecycle management
-    pub fn start_cleanup_task(&self) -> tokio::task::JoinHandle<()> {
+    pub fn start_cleanup_task(
+        &self,
+        shutdown_token: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
         let failed_attempts = self.failed_attempts.clone();
         let window_duration = self.window_duration;
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(300)); // Clean every 5 minutes
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
 
             loop {
-                interval.tick().await; // Wait for interval
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    _ = shutdown_token.cancelled() => break,
+                }
                 let mut attempts = failed_attempts.write().await;
                 let now = Instant::now();
 
                 // Clean up old attempts
-                for (_, attempt_times) in attempts.iter_mut() {
+                for attempt_times in attempts.values_mut() {
                     attempt_times
                         .retain(|timestamp| now.duration_since(*timestamp) < window_duration);
                 }
@@ -161,31 +175,54 @@ impl AuthState {
     }
 
     /// Validate API key with timing-safe comparison
-    /// Compares against ALL keys to prevent timing attacks
+    /// Compares against ALL keys (both regular and admin) to prevent timing attacks
+    /// Admin keys can access regular endpoints, but regular keys cannot access admin endpoints
+    /// Uses bitwise OR to ensure no short-circuit evaluation
     pub fn validate_api_key(&self, key: &str) -> bool {
-        // Timing-safe: compare against ALL keys, not short-circuit
         let key_bytes = key.as_bytes();
-        let mut found = false;
+        let mut found = 0u8; // Use integer for constant-time OR
+
+        // Check regular API keys first
         for valid_key in &self.api_keys {
-            // Always perform the comparison (no short-circuit)
-            let matches: bool = valid_key.as_bytes().ct_eq(key_bytes).into();
-            found = found || matches;
+            // Always perform the comparison (no short-circuit with bitwise OR)
+            let matches: u8 = if bool::from(valid_key.as_bytes().ct_eq(key_bytes)) {
+                1
+            } else {
+                0
+            };
+            found |= matches; // Bitwise OR is constant-time
         }
-        found
+
+        // Also check admin keys (admin keys work for regular endpoints too)
+        // This ensures auth works when only admin_api_keys is configured
+        for valid_key in &self.admin_api_keys {
+            let matches: u8 = if bool::from(valid_key.as_bytes().ct_eq(key_bytes)) {
+                1
+            } else {
+                0
+            };
+            found |= matches;
+        }
+
+        found == 1
     }
 
     /// Validate admin API key with timing-safe comparison
     /// Compares against ALL keys to prevent timing attacks
+    /// Uses bitwise OR to ensure no short-circuit evaluation
     pub fn validate_admin_key(&self, key: &str) -> bool {
-        // Timing-safe: compare against ALL keys, not short-circuit
         let key_bytes = key.as_bytes();
-        let mut found = false;
+        let mut found = 0u8; // Use integer for constant-time OR
         for valid_key in &self.admin_api_keys {
-            // Always perform the comparison (no short-circuit)
-            let matches: bool = valid_key.as_bytes().ct_eq(key_bytes).into();
-            found = found || matches;
+            // Always perform the comparison (no short-circuit with bitwise OR)
+            let matches: u8 = if bool::from(valid_key.as_bytes().ct_eq(key_bytes)) {
+                1
+            } else {
+                0
+            };
+            found |= matches; // Bitwise OR is constant-time
         }
-        found
+        found == 1
     }
 }
 
@@ -195,20 +232,17 @@ fn extract_client_ip(
     trusted_proxies: &HashSet<IpAddr>,
 ) -> Result<IpAddr, StatusCode> {
     // Try to get the actual connection IP (cannot be spoofed)
+    // ConnectInfo is populated by into_make_service_with_connect_info::<SocketAddr>()
     let peer_ip = request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
         .map(|info| info.ip())
-        .unwrap_or_else(|| {
-            // Fallback for test environments where ConnectInfo is not available
-            // This is safe in tests but should not happen in production
-            if cfg!(test) {
-                std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))
-            } else {
-                // In production, this should never happen
-                std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0))
-            }
-        });
+        .ok_or_else(|| {
+            // This should never happen with correct server configuration
+            // Server must use into_make_service_with_connect_info::<SocketAddr>()
+            tracing::error!("ConnectInfo not available - server misconfiguration");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     // If connection is from a trusted proxy, check x-forwarded-for header
     if trusted_proxies.contains(&peer_ip) {
@@ -229,7 +263,11 @@ fn extract_client_ip(
 }
 
 pub async fn auth_middleware(
-    State((config, auth)): State<(Arc<Config>, Arc<AuthState>)>,
+    State((config, auth, rate_limiter)): State<(
+        Arc<Config>,
+        Arc<AuthState>,
+        crate::middleware::RateLimiter,
+    )>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
@@ -244,13 +282,19 @@ pub async fn auth_middleware(
     // Extract client IP
     let client_ip = match extract_client_ip(&request, &auth.trusted_proxies) {
         Ok(ip) => ip,
-        Err(_) => return Err(StatusCode::BAD_REQUEST),
+        Err(status) => return Err(status),
     };
 
-    // Check rate limit and record failure atomically (fixes race condition)
-    if let Err(status) = auth.check_and_record_failure(client_ip).await {
-        warn!("Rate-limited authentication attempt from: {}", client_ip);
-        return Err(status);
+    // Check per-IP request rate limit for ALL requests (before auth)
+    rate_limiter.check_rate_limit(client_ip).await?;
+
+    // Check if IP is already banned from too many auth failures
+    if auth.is_banned(client_ip).await {
+        warn!(
+            "Rate-limited authentication attempt from banned IP: {}",
+            client_ip
+        );
+        return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
     // Check for API key in headers
@@ -266,7 +310,6 @@ pub async fn auth_middleware(
                 .and_then(|h| h.to_str().ok())
         });
 
-    // Use constant-time comparison for security
     let is_valid = match api_key {
         Some(key) => auth.validate_api_key(key),
         None => false,
@@ -281,6 +324,7 @@ pub async fn auth_middleware(
             "Authentication failed from: {} (missing or invalid API key)",
             client_ip
         );
+        auth.record_failure(client_ip).await?;
         Err(StatusCode::UNAUTHORIZED)
     }
 }
@@ -294,36 +338,39 @@ pub async fn admin_auth_middleware(
 ) -> Result<Response, StatusCode> {
     // Admin endpoints require explicit admin API key configuration
     if !auth.is_admin_enabled() {
-        // In production, always require admin keys
         #[cfg(not(debug_assertions))]
         {
             error!("Admin endpoint accessed but no admin API keys configured");
             return Err(StatusCode::UNAUTHORIZED);
         }
-        
-        // In dev mode, allow access only with explicit opt-in via env var
+
         #[cfg(debug_assertions)]
-        if std::env::var("APERTURE_ALLOW_DEV_ADMIN").as_deref() == Ok("1") {
-            tracing::warn!("Admin endpoint accessed in dev mode without admin keys (APERTURE_ALLOW_DEV_ADMIN=1)");
-            return Ok(next.run(request).await);
+        {
+            error!(
+                "Admin endpoint accessed but no admin API keys configured. \
+                 Please add admin_api_keys to your config file, or set \
+                 APERTURE_ALLOW_NO_AUTH=1 to disable auth entirely (not recommended)."
+            );
+            return Err(StatusCode::UNAUTHORIZED);
         }
-        
+
+        #[allow(unreachable_code)]
         return Err(StatusCode::UNAUTHORIZED);
     }
 
     // Extract client IP
     let client_ip = match extract_client_ip(&request, &auth.trusted_proxies) {
         Ok(ip) => ip,
-        Err(_) => return Err(StatusCode::BAD_REQUEST),
+        Err(status) => return Err(status),
     };
 
-    // Check rate limit and record failure atomically
-    if let Err(status) = auth.check_and_record_failure(client_ip).await {
+    // Check if IP is already banned from too many auth failures
+    if auth.is_banned(client_ip).await {
         warn!(
             "Rate-limited admin authentication attempt from: {}",
             client_ip
         );
-        return Err(status);
+        return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
     // Check for API key in headers
@@ -364,6 +411,7 @@ pub async fn admin_auth_middleware(
             },
             "Admin authentication failed"
         );
+        auth.record_failure(client_ip).await?;
         Err(StatusCode::UNAUTHORIZED)
     }
 }

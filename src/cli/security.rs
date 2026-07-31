@@ -13,6 +13,8 @@ use std::fmt;
 use url::Url;
 use zeroize::Zeroize;
 
+use crate::security::is_blocked_host;
+
 /// A string that never exposes its contents in debug/display output
 #[derive(Clone, Zeroize)]
 pub struct SecretString(String);
@@ -74,19 +76,6 @@ pub fn validate_url(url: &str) -> Result<Url, String> {
 pub fn clean_url(url: &str) -> Result<String, String> {
     validate_url(url)?;
     Ok(url.trim().to_string())
-}
-
-/// Check if a host is blocked (metadata endpoints, etc.)
-fn is_blocked_host(host: &str) -> bool {
-    // Block cloud metadata endpoints (exact match to prevent bypass via subdomains)
-    host == "169.254.169.254"
-        || host == "[::ffff:169.254.169.254]"
-        || host == "100.100.100.200"
-        || host == "metadata.google.internal"
-        || host == "metadata.azure.com"
-        // Block Kubernetes service DNS
-        || host.ends_with(".internal")
-        && host.starts_with("metadata")
 }
 
 /// Validate API key strength
@@ -209,5 +198,24 @@ mod tests {
     fn test_validate_api_key_placeholder() {
         assert!(validate_api_key("your-api-key-here").is_err());
         assert!(validate_api_key("PLACEHOLDER_KEY").is_err());
+    }
+
+    #[test]
+    fn test_blocked_host_internal_metadata() {
+        // These should be blocked (contain "metadata" in .internal domain)
+        assert!(is_blocked_host("metadata.internal"));
+        assert!(is_blocked_host("kubernetes-metadata.internal"));
+        assert!(is_blocked_host("some-metadata.internal"));
+        assert!(is_blocked_host("metadata.kubernetes.internal"));
+
+        // These should NOT be blocked (regular .internal domains)
+        assert!(!is_blocked_host("my-service.internal"));
+        assert!(!is_blocked_host("database.internal"));
+        assert!(!is_blocked_host("api.internal"));
+
+        // Trailing dot bypass prevention (RFC 1034 DNS equivalence)
+        assert!(is_blocked_host("metadata.internal."));
+        assert!(is_blocked_host("kubernetes-metadata.internal."));
+        assert!(is_blocked_host("metadata.google.internal."));
     }
 }

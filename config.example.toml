@@ -58,6 +58,8 @@ require_auth_in_prod = true
 max_json_depth = 256
 # Maximum streaming response size (prevents DoS via long streams)
 max_streaming_size_bytes = 104857600  # 100MB
+# Maximum messages per request (prevents DoS via huge conversation histories)
+max_messages = 10000
 
 [model_aliases]
 # Add model name mappings here if needed

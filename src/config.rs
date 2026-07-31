@@ -6,6 +6,11 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 
+use crate::security::{
+    is_internal_ip_strict_host as is_provider_internal_ip,
+    is_metadata_endpoint as is_provider_metadata_endpoint,
+};
+
 /// Aperture gateway configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ApertureConfig {
@@ -158,6 +163,10 @@ pub struct SecurityConfig {
     /// Maximum streaming response size in bytes
     #[serde(default = "default_max_streaming_size")]
     pub max_streaming_size_bytes: usize,
+
+    /// Maximum number of messages per request (prevents DoS via huge conversations)
+    #[serde(default = "default_max_messages")]
+    pub max_messages: usize,
 }
 
 fn default_max_body_size() -> usize {
@@ -188,8 +197,12 @@ fn default_max_streaming_size() -> usize {
     100 * 1024 * 1024 // 100MB
 }
 
+fn default_max_messages() -> usize {
+    10000
+}
+
 /// Endpoint style for different API providers
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointStyle {
     /// OpenAI v1 style: /v1/chat/completions, /v1/messages
@@ -336,6 +349,7 @@ impl Default for SecurityConfig {
             require_auth_in_prod: default_require_auth(),
             max_json_depth: default_max_json_depth(),
             max_streaming_size_bytes: default_max_streaming_size(),
+            max_messages: default_max_messages(),
         }
     }
 }
@@ -379,6 +393,9 @@ impl Config {
         if let Ok(api_key) = std::env::var("APERTURE_API_KEY") {
             tracing::info!("Overriding api_key with environment variable");
             config.aperture.api_key = Some(api_key);
+            // Zeroize the environment variable after loading
+            // Prevents key from being visible in /proc/[pid]/environ
+            std::env::remove_var("APERTURE_API_KEY");
         }
 
         config
@@ -393,6 +410,15 @@ impl Config {
         let addr = format!("{}:{}", self.host, self.port);
         addr.parse()
             .map_err(|e| anyhow::anyhow!("Invalid server address {}: {}", addr, e))
+    }
+
+    /// Resolve a model alias to its actual model name
+    /// If no alias exists, returns the original model name unchanged
+    pub fn resolve_model_alias(&self, model: &str) -> String {
+        self.model_aliases
+            .get(model)
+            .cloned()
+            .unwrap_or_else(|| model.to_string())
     }
 
     /// Configuration validation
@@ -546,6 +572,11 @@ impl Config {
             return Err("Max streaming size cannot exceed 1GB".to_string());
         }
 
+        // Validate max messages limit
+        if self.security.max_messages == 0 {
+            return Err("Max messages cannot be 0".to_string());
+        }
+
         // Production safety check - only enforce in release builds (production)
         if self.security.require_auth_in_prod
             && self.security.api_keys.is_empty()
@@ -643,41 +674,6 @@ impl Config {
         tracing::info!("Configuration saved to {}", path);
         Ok(())
     }
-}
-
-/// Check if a host is an internal IP address (for provider validation)
-/// Note: Carrier-grade NAT (100.64.0.0/10) is NOT blocked here because
-/// Tailscale and other VPN mesh networks use this range legitimately.
-fn is_provider_internal_ip(host: &str) -> bool {
-    host.parse::<std::net::IpAddr>()
-        .map(|ip| match ip {
-            std::net::IpAddr::V4(v4) => {
-                // Block standard private ranges and loopback
-                // Note: CGN (100.64.0.0/10) is allowed for Tailscale/VPN
-                v4.is_private() || v4.is_loopback() || v4.is_link_local()
-            }
-            std::net::IpAddr::V6(v6) => {
-                // Check for IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
-                if let Some(v4) = v6.to_ipv4_mapped() {
-                    return v4.is_private() || v4.is_loopback() || v4.is_link_local();
-                }
-
-                v6.is_loopback()
-                    || v6.is_unique_local()
-                    || matches!(v6.octets()[0], 0xfe) && (v6.octets()[1] & 0xc0) == 0x80
-                    || v6.is_multicast()
-            }
-        })
-        .unwrap_or(false)
-}
-
-/// Check if a host is a metadata endpoint (exact match to prevent bypass via subdomains)
-fn is_provider_metadata_endpoint(host: &str) -> bool {
-    host == "169.254.169.254"
-        || host == "[::ffff:169.254.169.254]"
-        || host == "100.100.100.200"
-        || host == "metadata.google.internal"
-        || host == "metadata.azure.com"
 }
 
 #[cfg(test)]
