@@ -4,6 +4,14 @@ use std::collections::HashMap;
 use tracing::debug;
 use uuid::Uuid;
 
+fn strip_cache_control(value: &Value) -> Value {
+    let mut v = value.clone();
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("cache_control");
+    }
+    v
+}
+
 pub fn anthropic_request_to_openai(anthropic: &Value) -> Value {
     let mut messages = Vec::new();
 
@@ -61,12 +69,19 @@ pub fn anthropic_request_to_openai(anthropic: &Value) -> Value {
         openai["tool_choice"] = convert_anthropic_tool_choice(tc);
     }
 
+    if let Some(metadata) = anthropic.get("metadata") {
+        if let Some(user_id) = metadata.get("user_id").and_then(|u| u.as_str()) {
+            openai["user"] = serde_json::json!(user_id);
+        }
+    }
+
     if let Some(obj) = openai.as_object_mut() {
         obj.remove("thinking");
         obj.remove("top_k");
         obj.remove("metadata");
         obj.remove("system");
         obj.remove("stop_sequences");
+        obj.remove("cache_control");
     }
 
     debug!(
@@ -150,7 +165,7 @@ pub fn openai_response_to_anthropic(openai: &Value) -> Value {
         "content": content,
         "model": openai.get("model").unwrap_or(&Value::Null),
         "stop_reason": stop_reason,
-        "stop_sequence": Value::Null,
+        "stop_sequence": usage.and_then(|u| u.get("stop_sequence")).unwrap_or(&Value::Null),
         "usage": {
             "input_tokens": usage.and_then(|u| u.get("prompt_tokens")).unwrap_or(&serde_json::json!(0)),
             "output_tokens": usage.and_then(|u| u.get("completion_tokens")).unwrap_or(&serde_json::json!(0)),
@@ -175,6 +190,49 @@ fn extract_text_from_content(content: &Value) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
+    }
+}
+
+fn convert_tool_result_content_to_openai(content: &Value) -> Value {
+    match content {
+        Value::String(s) => Value::String(s.clone()),
+        Value::Array(blocks) => {
+            let parts: Vec<Value> = blocks
+                .iter()
+                .map(|b| {
+                    let block_type = b.get("type").and_then(|t| t.as_str()).unwrap_or("text");
+                    match block_type {
+                        "text" => serde_json::json!({
+                            "type": "text",
+                            "text": b.get("text").unwrap_or(&Value::Null)
+                        }),
+                        "image" => {
+                            let source = b.get("source").unwrap_or(&Value::Null);
+                            serde_json::json!({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": format!("data:{};base64,{}",
+                                        source.get("media_type").and_then(|m| m.as_str()).unwrap_or("image/png"),
+                                        source.get("data").and_then(|d| d.as_str()).unwrap_or("")
+                                    )
+                                }
+                            })
+                        }
+                        _ => serde_json::json!({
+                            "type": "text",
+                            "text": serde_json::to_string(b).unwrap_or_default()
+                        }),
+                    }
+                })
+                .collect();
+            if parts.len() == 1 {
+                if let Some(text) = parts[0].get("text").and_then(|t| t.as_str()) {
+                    return Value::String(text.to_string());
+                }
+            }
+            Value::Array(parts)
+        }
+        _ => Value::String(String::new()),
     }
 }
 
@@ -269,15 +327,18 @@ fn convert_anthropic_message_expanded(role: &str, content: Option<&Value>) -> Ve
                     .and_then(|i| i.as_str())
                     .unwrap_or("")
                     .to_string();
-                let mut result_text =
-                    extract_text_from_content(b.get("content").unwrap_or(&Value::Null));
+                let result_content =
+                    convert_tool_result_content_to_openai(b.get("content").unwrap_or(&Value::Null));
+                let mut content_val = result_content;
                 if b.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false) {
-                    result_text = format!("Error: {}", result_text);
+                    if let Some(s) = content_val.as_str() {
+                        content_val = Value::String(format!("Error: {}", s));
+                    }
                 }
                 tool_results.push(serde_json::json!({
                     "role": "tool",
                     "tool_call_id": tool_use_id,
-                    "content": result_text
+                    "content": content_val
                 }));
             } else {
                 non_tool_blocks.push(b);
@@ -305,6 +366,7 @@ fn convert_blocks_to_openai_content(blocks: &[&Value]) -> Value {
     let parts: Vec<Value> = blocks
         .iter()
         .map(|b| {
+            let b = strip_cache_control(b);
             let block_type = b.get("type").and_then(|t| t.as_str()).unwrap_or("text");
             match block_type {
                 "text" => serde_json::json!({
@@ -325,7 +387,7 @@ fn convert_blocks_to_openai_content(blocks: &[&Value]) -> Value {
                 }
                 _ => serde_json::json!({
                     "type": "text",
-                    "text": serde_json::to_string(*b).unwrap_or_default()
+                    "text": serde_json::to_string(&b).unwrap_or_default()
                 }),
             }
         })
@@ -344,6 +406,7 @@ fn convert_anthropic_message(role: &str, content: Option<&Value>) -> Value {
                 let parts: Vec<Value> = blocks
                     .iter()
                     .map(|b| {
+                        let b = strip_cache_control(b);
                         let block_type = b.get("type").and_then(|t| t.as_str()).unwrap_or("text");
                         match block_type {
                             "text" => serde_json::json!({
@@ -371,7 +434,7 @@ fn convert_anthropic_message(role: &str, content: Option<&Value>) -> Value {
                             }
                             _ => serde_json::json!({
                                 "type": "text",
-                                "text": serde_json::to_string(b).unwrap_or_default()
+                                "text": serde_json::to_string(&b).unwrap_or_default()
                             }),
                         }
                     })
@@ -469,6 +532,7 @@ pub struct OpenAIToAnthropicStreamConverter {
     tool_block_order: Vec<usize>,
     input_tokens: u32,
     output_tokens: u32,
+    output_tokens_from_upstream: bool,
     line_buffer: String,
 }
 
@@ -494,6 +558,7 @@ impl OpenAIToAnthropicStreamConverter {
             tool_block_order: Vec::new(),
             input_tokens: 0,
             output_tokens: 0,
+            output_tokens_from_upstream: false,
             line_buffer: String::new(),
         }
     }
@@ -579,6 +644,10 @@ impl OpenAIToAnthropicStreamConverter {
             if let Some(t) = usage.get("prompt_tokens").and_then(|t| t.as_u64()) {
                 self.input_tokens = t as u32;
             }
+            if let Some(t) = usage.get("completion_tokens").and_then(|t| t.as_u64()) {
+                self.output_tokens = t as u32;
+                self.output_tokens_from_upstream = true;
+            }
         }
 
         let choice = value
@@ -609,7 +678,9 @@ impl OpenAIToAnthropicStreamConverter {
                             "delta": {"type": "thinking_delta", "thinking": reasoning}
                         }),
                     ));
-                    self.output_tokens += 1;
+                    if !self.output_tokens_from_upstream {
+                        self.output_tokens += 1;
+                    }
                 }
             }
 
@@ -645,7 +716,9 @@ impl OpenAIToAnthropicStreamConverter {
                             "delta": {"type": "text_delta", "text": content}
                         }),
                     ));
-                    self.output_tokens += 1;
+                    if !self.output_tokens_from_upstream {
+                        self.output_tokens += 1;
+                    }
                 }
             }
 
@@ -984,5 +1057,73 @@ mod tests {
         assert!(events2.iter().any(|e| e.event_type == "content_block_stop"));
         assert!(events2.iter().any(|e| e.event_type == "message_delta"));
         assert!(events2.iter().any(|e| e.event_type == "message_stop"));
+    }
+
+    #[test]
+    fn test_metadata_user_id_mapped_to_user() {
+        let anthropic = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "metadata": {"user_id": "user-123"}
+        });
+        let openai = anthropic_request_to_openai(&anthropic);
+        assert_eq!(openai["user"], "user-123");
+        assert!(openai.get("metadata").is_none());
+    }
+
+    #[test]
+    fn test_cache_control_stripped() {
+        let anthropic = serde_json::json!({
+            "model": "test",
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}]
+            }],
+            "cache_control": {"type": "ephemeral"}
+        });
+        let openai = anthropic_request_to_openai(&anthropic);
+        assert!(openai.get("cache_control").is_none());
+    }
+
+    #[test]
+    fn test_tool_result_image_preserved() {
+        let anthropic = serde_json::json!({
+            "model": "test",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": [
+                        {"type": "text", "text": "result text"},
+                        {"type": "image", "source": {"media_type": "image/png", "data": "iVBOR"}}
+                    ]
+                }]
+            }]
+        });
+        let openai = anthropic_request_to_openai(&anthropic);
+        let tool_msg = &openai["messages"][0];
+        assert_eq!(tool_msg["role"], "tool");
+        assert!(tool_msg["content"].is_array());
+        assert_eq!(tool_msg["content"][0]["type"], "text");
+        assert_eq!(tool_msg["content"][1]["type"], "image_url");
+    }
+
+    #[test]
+    fn test_stream_converter_uses_upstream_output_tokens() {
+        let mut conv = OpenAIToAnthropicStreamConverter::new("test-model".to_string());
+
+        let chunk = r#"data: {"id":"1","object":"chat.completion.chunk","model":"test","choices":[{"index":0,"delta":{"content":"hi"}}],"usage":{"prompt_tokens":100,"completion_tokens":50}}"#;
+        let events = conv.convert_chunk(&format!("{}\n\n", chunk));
+        assert!(events.iter().any(|e| e.event_type == "content_block_delta"));
+
+        let end_chunk = r#"data: {"id":"1","object":"chat.completion.chunk","model":"test","choices":[{"index":0,"finish_reason":"stop","delta":{}}]}"#;
+        let events2 = conv.convert_chunk(&format!("{}\n\n", end_chunk));
+        let msg_delta = events2
+            .iter()
+            .find(|e| e.event_type == "message_delta")
+            .expect("message_delta event should exist");
+        let data: Value = serde_json::from_str(&msg_delta.data).unwrap();
+        assert_eq!(data["usage"]["output_tokens"], 50);
     }
 }
