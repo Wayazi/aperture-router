@@ -53,7 +53,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_full_health_check_flow() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -76,7 +76,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_authentication_required_endpoint() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Try to access protected endpoint without auth
@@ -99,7 +99,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_authentication_with_valid_key() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Access protected endpoint with valid API key
@@ -126,7 +126,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_authentication_with_invalid_key() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Try with invalid API key
@@ -150,7 +150,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_authentication_with_x_api_key_header() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Use x-api-key header instead of Authorization
@@ -174,7 +174,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_rate_limiting_on_failed_auth() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Make multiple failed auth attempts from same "IP"
@@ -198,7 +198,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_no_auth_when_disabled() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Access protected endpoint without auth when auth is disabled
@@ -220,7 +220,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_anthropic_endpoint_with_auth() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Access Anthropic endpoint with valid auth
@@ -241,7 +241,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_streaming_endpoint_with_auth() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Access streaming endpoint with valid auth
@@ -275,7 +275,7 @@ mod integration_tests {
 
         config.aperture.base_url = mock_server.uri();
 
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Request without stream flag should fail
@@ -295,7 +295,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_concurrent_requests_handling() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let mut handles = vec![];
@@ -325,7 +325,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_error_handling_invalid_json() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Send invalid JSON
@@ -345,7 +345,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_cors_preflight_request() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -372,7 +372,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_security_headers() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -394,7 +394,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_session_id_generated_when_not_provided() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Request without x-session-id header
@@ -424,7 +424,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_session_id_reused_when_valid() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let test_session_id = uuid::Uuid::new_v4();
@@ -456,7 +456,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_session_id_rejected_when_malformed() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Request with invalid session ID format
@@ -489,7 +489,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_request_id_unique_per_request() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Make two requests with same session ID

@@ -48,12 +48,14 @@ pub fn validate_message_content(content: &str) -> Result<(), String> {
     }
 }
 
+pub const MAX_TOKENS_LIMIT: u32 = 1_000_000;
+
 pub fn validate_max_tokens(max_tokens: u32) -> Result<(), String> {
     if max_tokens == 0 {
         return Err("max_tokens must be greater than 0".to_string());
     }
-    if max_tokens > 128_000 {
-        return Err(format!("max_tokens too large ({}, max 128000)", max_tokens));
+    if max_tokens > MAX_TOKENS_LIMIT {
+        return Err(format!("max_tokens exceeds limit of {}", MAX_TOKENS_LIMIT));
     }
     Ok(())
 }

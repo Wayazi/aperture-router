@@ -10,7 +10,6 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::config::ApertureConfig;
-use crate::http_client::SHARED_CLIENT;
 
 /// Model with provider metadata from Aperture
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -72,6 +71,8 @@ pub struct DiscoverySnapshot {
 /// No hardcoded plans - everything comes from Aperture
 pub struct ModelDiscovery {
     aperture_config: ApertureConfig,
+    /// HTTP client with configured timeouts
+    client: reqwest::Client,
     /// Current models indexed by ID
     models: Arc<RwLock<HashMap<String, Model>>>,
     /// Models grouped by provider
@@ -85,11 +86,19 @@ pub struct ModelDiscovery {
 }
 
 impl ModelDiscovery {
-    pub fn new(aperture_config: ApertureConfig) -> anyhow::Result<Self> {
+    pub fn new(
+        aperture_config: ApertureConfig,
+        http_config: &crate::config::HttpConfig,
+    ) -> anyhow::Result<Self> {
         let refresh_interval_secs = aperture_config.model_refresh_interval_secs;
+        let client = crate::http_client::create_client_with_timeouts(
+            http_config.request_timeout_secs,
+            http_config.connect_timeout_secs,
+        )?;
 
         Ok(Self {
             aperture_config,
+            client,
             models: Arc::new(RwLock::new(HashMap::new())),
             models_by_provider: Arc::new(RwLock::new(HashMap::new())),
             providers: Arc::new(RwLock::new(HashSet::new())),
@@ -116,26 +125,89 @@ impl ModelDiscovery {
 
         debug!("Fetching models from {}", url);
 
-        // Use shared HTTP client for memory efficiency
-        let response = SHARED_CLIENT.get(url.clone()).send().await?;
+        // Retry with exponential backoff (3 attempts: first try, then 2s, 4s)
+        let max_retries = 3;
+        let mut last_error = None;
+        for attempt in 0..max_retries {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_secs(1 << attempt);
+                debug!(
+                    "Retrying model fetch in {:?} (attempt {}/{})",
+                    delay,
+                    attempt + 1,
+                    max_retries
+                );
+                tokio::time::sleep(delay).await;
+            }
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unable to read error body".to_string());
-            return Err(anyhow::anyhow!(
-                "Failed to fetch models from {}: {} - {}",
-                url,
-                status,
-                error_body
-            ));
+            let mut request = self.client.get(url.clone());
+            if let Some(ref api_key) = self.aperture_config.api_key {
+                request = request.header("x-api-key", api_key.as_str());
+            }
+
+            match request.send().await {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        let status = response.status();
+                        let error_body = response
+                            .text()
+                            .await
+                            .unwrap_or_else(|_| "Unable to read error body".to_string());
+                        let err = anyhow::anyhow!(
+                            "Failed to fetch models from {}: {} - {}",
+                            url,
+                            status,
+                            error_body
+                        );
+                        if status.is_server_error() {
+                            warn!(
+                                "Server error from Aperture (attempt {}): {}",
+                                attempt + 1,
+                                err
+                            );
+                            last_error = Some(err);
+                            continue;
+                        }
+                        return Err(err);
+                    }
+
+                    let models_response: ModelsResponse = match response.json().await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            warn!(
+                                "Failed to decode models response (attempt {}): {}",
+                                attempt + 1,
+                                e
+                            );
+                            last_error =
+                                Some(anyhow::anyhow!("Failed to decode response body: {}", e));
+                            continue;
+                        }
+                    };
+                    return self.process_models_response(models_response, &url).await;
+                }
+                Err(e) => {
+                    warn!(
+                        "Connection error fetching models (attempt {}): {}",
+                        attempt + 1,
+                        e
+                    );
+                    last_error = Some(anyhow::anyhow!("{}", e));
+                }
+            }
         }
 
-        let models_response: ModelsResponse = response.json().await?;
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!("Failed to fetch models after {} attempts", max_retries)
+        }))
+    }
 
-        // Get model count for capacity hints (reduces HashMap reallocations)
+    async fn process_models_response(
+        &self,
+        models_response: ModelsResponse,
+        url: &Url,
+    ) -> anyhow::Result<DiscoverySnapshot> {
+        let _ = url;
         let model_count = models_response.data.len();
 
         // Process models and extract provider metadata from Aperture
