@@ -251,7 +251,10 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> RouterHa
     let cors = create_cors_layer(&config.cors);
 
     // Create rate limiter for per-client request limiting
-    let rate_limiter = crate::middleware::RateLimiter::new(100, std::time::Duration::from_secs(60));
+    let rate_limiter = crate::middleware::RateLimiter::new(
+        config.rate_limit.burst_size as usize,
+        std::time::Duration::from_secs(1),
+    );
 
     // Start rate limiter cleanup task
     let rate_limit_cleanup_handle = Arc::new(Mutex::new(Some(
