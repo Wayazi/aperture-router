@@ -13,7 +13,7 @@ use crate::{
     server::AppState,
     types::{
         openai::ChatCompletionRequest,
-        validation::{validate_message_content, validate_role},
+        validation::{validate_max_tokens, validate_message_content, validate_role},
     },
 };
 
@@ -44,16 +44,15 @@ pub async fn chat_completions(
         return *response;
     }
 
-    // Validate max_tokens upper bound
-    const MAX_TOKENS_LIMIT: u32 = 1_000_000;
+    // Validate max_tokens
     if let Some(max_tokens) = request.max_tokens {
-        if max_tokens > MAX_TOKENS_LIMIT {
-            warn!("max_tokens exceeds limit: {}", max_tokens);
+        if let Err(e) = validate_max_tokens(max_tokens) {
+            warn!("Invalid max_tokens: {}", e);
             return (
                 StatusCode::BAD_REQUEST,
                 axum::Json(serde_json::json!({
                     "error": {
-                        "message": format!("max_tokens exceeds limit of {}", MAX_TOKENS_LIMIT),
+                        "message": e,
                         "type": "invalid_request_error",
                         "code": "invalid_max_tokens"
                     }
