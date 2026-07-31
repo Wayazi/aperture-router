@@ -17,8 +17,6 @@ use crate::{
     types::validation::{validate_message_content, validate_model_name, validate_role},
 };
 
-/// Maximum number of messages allowed in streaming request
-const MAX_MESSAGES: usize = 1000;
 /// Maximum tokens limit
 const MAX_TOKENS_LIMIT: u32 = 1_000_000;
 /// Maximum extra JSON fields (prevent memory exhaustion)
@@ -30,9 +28,20 @@ const MAX_CONTENT_SIZE: usize = 1024 * 1024;
 /// Supports both OpenAI and Anthropic formats, including tool/function calling and extended thinking
 pub async fn handle_proxy_stream(
     State(state): State<AppState>,
-    Json(request): Json<Value>,
+    Json(mut request): Json<Value>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     info!("Handling streaming proxy request");
+
+    // Resolve model alias if present
+    if let Some(model) = request.get("model").and_then(|m| m.as_str()) {
+        let resolved_model = state.config.resolve_model_alias(model);
+        if resolved_model != model {
+            debug!("Resolved model alias: {} -> {}", model, resolved_model);
+            if let Some(obj) = request.as_object_mut() {
+                obj.insert("model".to_string(), Value::String(resolved_model));
+            }
+        }
+    }
 
     // Validate model name if present
     if let Some(model) = request.get("model").and_then(|m| m.as_str()) {
@@ -44,8 +53,13 @@ pub async fn handle_proxy_stream(
 
     // Validate messages array if present
     if let Some(messages) = request.get("messages").and_then(|m| m.as_array()) {
-        if messages.len() > MAX_MESSAGES {
-            warn!("Too many messages in streaming request: {}", messages.len());
+        let max_messages = state.config.security.max_messages;
+        if messages.len() > max_messages {
+            warn!(
+                "Too many messages in streaming request: {} (max {})",
+                messages.len(),
+                max_messages
+            );
             return Err(StatusCode::BAD_REQUEST);
         }
 
