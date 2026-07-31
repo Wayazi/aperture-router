@@ -231,7 +231,7 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
     }
 
     // Initialize and fetch models
-    let discovery = Arc::new(ModelDiscovery::new(config.aperture.clone())?);
+    let discovery = Arc::new(ModelDiscovery::new(config.aperture.clone(), &config.http)?);
     info!("Fetching models from Aperture...");
     let snapshot = discovery.fetch_models().await?;
     info!(

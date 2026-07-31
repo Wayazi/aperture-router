@@ -42,7 +42,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_health_endpoint() {
         let config = create_test_config();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -66,7 +66,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_health_endpoint_options() {
         let config = create_test_config();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -85,7 +85,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_router_creation() {
         let config = create_test_config();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
 
         // This should not panic
         let _app = create_test_router(config, std::sync::Arc::new(discovery));
@@ -98,7 +98,7 @@ mod route_tests {
         let mut config = create_test_config();
         config.security.api_keys = vec!["test-api-key-with-sufficient-entropy-32".to_string()];
 
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Health endpoint should still work without auth
@@ -115,7 +115,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_not_found_endpoint() {
         let config = create_test_config();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -135,7 +135,7 @@ mod route_tests {
         config.port = 8765;
         config.security.max_body_size_bytes = 5 * 1024 * 1024;
 
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let _app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Router created successfully if we reach here
@@ -144,7 +144,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_cors_headers() {
         let config = create_test_config();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -165,7 +165,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_compression_layer() {
         let config = create_test_config();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -187,7 +187,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_trace_layer_present() {
         let config = create_test_config();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
 
         // Router should include trace layer
         let app = create_test_router(config, std::sync::Arc::new(discovery));
@@ -205,7 +205,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_multiple_health_requests() {
         let config = create_test_config();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Make multiple concurrent requests
@@ -237,7 +237,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_health_response_format() {
         let config = create_test_config();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -274,7 +274,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_admin_stats_with_valid_admin_key() {
         let config = create_test_config_with_admin_keys();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -303,7 +303,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_admin_stats_with_invalid_admin_key() {
         let config = create_test_config_with_admin_keys();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -320,7 +320,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_admin_stats_without_auth_header() {
         let config = create_test_config_with_admin_keys();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -337,7 +337,7 @@ mod route_tests {
     async fn test_admin_stats_with_regular_key_fails() {
         // Regular API key should NOT work for admin endpoints
         let config = create_test_config_with_admin_keys();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -359,7 +359,7 @@ mod route_tests {
     async fn test_admin_stats_with_x_api_key_header() {
         // Test that x-api-key header works for admin auth
         let config = create_test_config_with_admin_keys();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -376,7 +376,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_admin_refresh_models_with_valid_key() {
         let config = create_test_config_with_admin_keys();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -398,7 +398,7 @@ mod route_tests {
     #[tokio::test]
     async fn test_admin_refresh_models_without_key() {
         let config = create_test_config_with_admin_keys();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -423,7 +423,7 @@ mod route_tests {
         config.security.api_keys = vec!["regular-key-with-sufficient-entropy-12345678".to_string()];
         config.security.require_auth_in_prod = true;
 
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()

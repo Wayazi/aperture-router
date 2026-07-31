@@ -28,7 +28,8 @@ use crate::{
         anthropic_request_to_openai, openai_response_to_anthropic, OpenAIToAnthropicStreamConverter,
     },
     types::validation::{
-        validate_message_content, validate_role, validate_temperature, validate_top_p,
+        validate_max_tokens, validate_message_content, validate_role, validate_temperature,
+        validate_top_p,
     },
     ProviderRegistry,
 };
@@ -403,6 +404,110 @@ fn build_anthropic_sse(
     )
 }
 
+/// Stream an Anthropic-format request directly to an Anthropic-style provider
+/// with true SSE passthrough (no buffering, no conversion needed).
+async fn handle_anthropic_direct_streaming(
+    state: &AppState,
+    request: &MessageRequest,
+    providers: Vec<crate::config::Provider>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    let body = serde_json::to_vec(request).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let gateway_url = state.proxy_client.base_url().to_string();
+    let default_key = state.proxy_client.api_key().cloned();
+
+    for (i, provider) in providers.iter().take(MAX_FAILOVER_ATTEMPTS).enumerate() {
+        let url = ProviderRegistry::build_endpoint_url(provider, "v1/messages");
+        let api_key = safe_api_key(provider, default_key.as_ref(), &gateway_url);
+
+        debug!(
+            "Streaming Anthropic-direct to provider {}/{}: '{}' ({})",
+            i + 1,
+            MAX_FAILOVER_ATTEMPTS,
+            provider.name,
+            url
+        );
+
+        match state
+            .proxy_client
+            .forward_request_stream_to_url(&url, body.clone(), api_key, EndpointStyle::Anthropic)
+            .await
+        {
+            Ok(raw_stream) => {
+                let sse_keep_alive_secs = state.config.http.sse_keep_alive_secs;
+                let sse_stream = raw_stream.flat_map(move |chunk_result| {
+                    let events = match chunk_result {
+                        Ok(data) => process_sse_chunk_lines_anthropic(&data),
+                        Err(e) => {
+                            error!("Stream error in Anthropic-direct: {}", e);
+                            vec![Ok(Event::default().data(
+                                serde_json::json!({
+                                    "type": "error",
+                                    "error": {"type": "api_error", "message": "Stream interrupted"}
+                                })
+                                .to_string(),
+                            ))]
+                        }
+                    };
+                    stream::iter(events)
+                });
+
+                return Ok(Sse::new(sse_stream).keep_alive(
+                    axum::response::sse::KeepAlive::new()
+                        .interval(Duration::from_secs(sse_keep_alive_secs))
+                        .text("keepalive"),
+                ));
+            }
+            Err(e) => {
+                warn!(
+                    "Provider '{}' streaming failed (attempt {}/{}): {}",
+                    provider.name,
+                    i + 1,
+                    MAX_FAILOVER_ATTEMPTS,
+                    e
+                );
+            }
+        }
+    }
+
+    Err(StatusCode::BAD_GATEWAY)
+}
+
+/// Parse SSE chunk lines for Anthropic-format passthrough (no conversion needed)
+fn process_sse_chunk_lines_anthropic(chunk: &str) -> Vec<Result<Event, Infallible>> {
+    let mut events = Vec::new();
+    let mut event_type = String::new();
+
+    for line in chunk.lines() {
+        let line = line.trim_end_matches('\r');
+
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(et) = line.strip_prefix("event: ") {
+            event_type = et.to_string();
+            continue;
+        }
+
+        if let Some(data) = line.strip_prefix("data: ") {
+            if data == "[DONE]" {
+                events.push(Ok(Event::default().data("[DONE]")));
+                continue;
+            }
+
+            let mut event = Event::default().data(data);
+            if !event_type.is_empty() {
+                event = event.event(event_type.clone());
+            }
+            events.push(Ok(event));
+            event_type.clear();
+        }
+    }
+
+    events
+}
+
 /// Anthropic messages endpoint with multi-provider support and format conversion
 pub async fn anthropic_messages(
     State(state): State<AppState>,
@@ -424,30 +529,15 @@ pub async fn anthropic_messages(
         return *response;
     }
 
-    // Validate max_tokens if provided (must be > 0 and within limit)
-    const MAX_TOKENS_LIMIT: u32 = 1_000_000;
+    // Validate max_tokens if provided
     if let Some(max_tokens) = request.max_tokens {
-        if max_tokens == 0 {
-            warn!("max_tokens is 0");
+        if let Err(e) = validate_max_tokens(max_tokens) {
+            warn!("Invalid max_tokens: {}", e);
             return (
                 StatusCode::BAD_REQUEST,
                 axum::Json(serde_json::json!({
                     "error": {
-                        "message": "max_tokens must be greater than 0",
-                        "type": "invalid_request_error",
-                        "code": "invalid_max_tokens"
-                    }
-                })),
-            )
-                .into_response();
-        }
-        if max_tokens > MAX_TOKENS_LIMIT {
-            warn!("max_tokens exceeds limit: {}", max_tokens);
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(serde_json::json!({
-                    "error": {
-                        "message": format!("max_tokens exceeds limit of {}", MAX_TOKENS_LIMIT),
+                        "message": e,
                         "type": "invalid_request_error",
                         "code": "invalid_max_tokens"
                     }
@@ -576,6 +666,18 @@ pub async fn anthropic_messages(
             anthropic_providers.len(),
             request.model
         );
+
+        // Use true SSE streaming when stream:true, otherwise buffer
+        if request.stream.unwrap_or(false) {
+            match handle_anthropic_direct_streaming(&state, &request, anthropic_providers).await {
+                Ok(sse) => return sse.into_response(),
+                Err(status) => {
+                    return anthropic_server_error(status, "Streaming request failed")
+                        .into_response();
+                }
+            }
+        }
+
         return proxy_handler_multi(
             state.proxy_client,
             anthropic_providers,

@@ -103,15 +103,43 @@ impl ProviderRegistry {
                 );
             } else {
                 if let Some(provider) = inner.providers.get_mut(provider_id) {
-                    provider.models = model_ids.clone();
+                    // Merge discovered models with existing configured models
+                    // instead of replacing the entire list
+                    let existing: std::collections::HashSet<_> =
+                        provider.models.iter().cloned().collect();
+                    for model_id in model_ids {
+                        if !existing.contains(model_id) {
+                            provider.models.push(model_id.clone());
+                        }
+                    }
                 }
             }
 
+            // Insert discovered models into the routing map
             for model_id in model_ids {
                 inner
                     .model_to_provider
                     .insert(model_id.clone(), provider_id.clone());
             }
+        }
+
+        // Ensure manually-configured models (not in discovery) are also routable
+        let manual_entries: Vec<(String, String)> = inner
+            .providers
+            .iter()
+            .flat_map(|(provider_id, provider)| {
+                provider
+                    .models
+                    .iter()
+                    .map(|m| (m.clone(), provider_id.clone()))
+            })
+            .collect();
+
+        for (model_id, provider_id) in manual_entries {
+            inner
+                .model_to_provider
+                .entry(model_id)
+                .or_insert(provider_id);
         }
 
         let all_valid_models: std::collections::HashSet<String> = inner

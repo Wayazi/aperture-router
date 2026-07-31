@@ -3,7 +3,10 @@
 
 use axum::{
     extract::State,
-    response::sse::{Event, Sse},
+    response::{
+        sse::{Event, Sse},
+        IntoResponse, Response,
+    },
     Json,
 };
 use futures::stream::{self, Stream, StreamExt};
@@ -14,11 +17,25 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     server::AppState,
-    types::validation::{validate_message_content, validate_model_name, validate_role},
+    types::validation::{
+        validate_max_tokens, validate_message_content, validate_model_name, validate_role,
+    },
 };
 
-/// Maximum tokens limit
-const MAX_TOKENS_LIMIT: u32 = 1_000_000;
+fn json_error_response(status: StatusCode, code: &str, message: &str) -> Response {
+    (
+        status,
+        axum::Json(serde_json::json!({
+            "error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "code": code
+            }
+        })),
+    )
+        .into_response()
+}
+
 /// Maximum extra JSON fields (prevent memory exhaustion)
 const MAX_OTHER_FIELDS: usize = 50;
 /// Maximum content length per message (1MB)
@@ -29,7 +46,7 @@ const MAX_CONTENT_SIZE: usize = 1024 * 1024;
 pub async fn handle_proxy_stream(
     State(state): State<AppState>,
     Json(mut request): Json<Value>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, Response> {
     info!("Handling streaming proxy request");
 
     // Resolve model alias if present
@@ -47,7 +64,11 @@ pub async fn handle_proxy_stream(
     if let Some(model) = request.get("model").and_then(|m| m.as_str()) {
         if let Err(e) = validate_model_name(model) {
             warn!("Invalid model name in streaming request: {}", e);
-            return Err(StatusCode::BAD_REQUEST);
+            return Err(json_error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_model_name",
+                &e,
+            ));
         }
     }
 
@@ -60,7 +81,11 @@ pub async fn handle_proxy_stream(
                 messages.len(),
                 max_messages
             );
-            return Err(StatusCode::BAD_REQUEST);
+            return Err(json_error_response(
+                StatusCode::BAD_REQUEST,
+                "too_many_messages",
+                &format!("Too many messages (max {})", max_messages),
+            ));
         }
 
         // Validate roles and content in messages
@@ -68,7 +93,11 @@ pub async fn handle_proxy_stream(
             if let Some(role) = msg.get("role").and_then(|r| r.as_str()) {
                 if let Err(e) = validate_role(role) {
                     warn!("Invalid role in streaming message {}: {}", i, e);
-                    return Err(StatusCode::BAD_REQUEST);
+                    return Err(json_error_response(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_role",
+                        &format!("Invalid role in message {}: {}", i, e),
+                    ));
                 }
             }
 
@@ -80,11 +109,19 @@ pub async fn handle_proxy_stream(
                         i,
                         content.len()
                     );
-                    return Err(StatusCode::BAD_REQUEST);
+                    return Err(json_error_response(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_content",
+                        "Content too large",
+                    ));
                 }
                 if let Err(e) = validate_message_content(content) {
                     warn!("Invalid content in streaming message {}: {}", i, e);
-                    return Err(StatusCode::BAD_REQUEST);
+                    return Err(json_error_response(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_content",
+                        &e,
+                    ));
                 }
             }
 
@@ -96,7 +133,11 @@ pub async fn handle_proxy_stream(
                         i,
                         content_array.len()
                     );
-                    return Err(StatusCode::BAD_REQUEST);
+                    return Err(json_error_response(
+                        StatusCode::BAD_REQUEST,
+                        "too_many_content_blocks",
+                        "Too many content blocks",
+                    ));
                 }
                 for block in content_array {
                     if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
@@ -106,7 +147,11 @@ pub async fn handle_proxy_stream(
                                 i,
                                 text.len()
                             );
-                            return Err(StatusCode::BAD_REQUEST);
+                            return Err(json_error_response(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_content",
+                                "Content block too large",
+                            ));
                         }
                     }
                 }
@@ -118,18 +163,25 @@ pub async fn handle_proxy_stream(
     if let Some(obj) = request.as_object() {
         if obj.len() > MAX_OTHER_FIELDS {
             warn!("Too many fields in streaming request: {}", obj.len());
-            return Err(StatusCode::BAD_REQUEST);
+            return Err(json_error_response(
+                StatusCode::BAD_REQUEST,
+                "too_many_fields",
+                &format!("Too many extra fields (max {})", MAX_OTHER_FIELDS),
+            ));
         }
     }
 
     // Validate max_tokens if present
     if let Some(max_tokens) = request.get("max_tokens").and_then(|t| t.as_u64()) {
-        if max_tokens > MAX_TOKENS_LIMIT as u64 {
-            warn!(
-                "max_tokens exceeds limit in streaming request: {}",
-                max_tokens
-            );
-            return Err(StatusCode::BAD_REQUEST);
+        if let Ok(max_tokens_u32) = u32::try_from(max_tokens) {
+            if let Err(e) = validate_max_tokens(max_tokens_u32) {
+                warn!("Invalid max_tokens in streaming request: {}", e);
+                return Err(json_error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_max_tokens",
+                    &e,
+                ));
+            }
         }
     }
 
@@ -140,7 +192,11 @@ pub async fn handle_proxy_stream(
         .unwrap_or(false);
     if !is_streaming {
         debug!("Stream flag not set, returning bad request");
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(json_error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Stream must be set to true for this endpoint",
+        ));
     }
 
     // Check if extended thinking should be included (default: hide)
@@ -170,7 +226,11 @@ pub async fn handle_proxy_stream(
         Ok(body) => body,
         Err(e) => {
             error!("Failed to serialize streaming request: {}", e);
-            return Err(StatusCode::BAD_REQUEST);
+            return Err(json_error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "Invalid request format",
+            ));
         }
     };
 
@@ -190,7 +250,11 @@ pub async fn handle_proxy_stream(
         Ok(response) => response,
         Err(e) => {
             error!("Failed to forward streaming request: {}", e);
-            return Err(StatusCode::BAD_GATEWAY);
+            return Err(json_error_response(
+                StatusCode::BAD_GATEWAY,
+                "upstream_error",
+                "Failed to forward streaming request",
+            ));
         }
     };
 
