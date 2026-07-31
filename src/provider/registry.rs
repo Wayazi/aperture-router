@@ -7,22 +7,19 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-/// Registry for managing multiple providers and model routing
-/// Supports dynamic updates from Aperture discovery
+#[derive(Debug)]
+struct RegistryInner {
+    providers: HashMap<String, Provider>,
+    model_to_provider: HashMap<String, String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderRegistry {
-    /// All providers indexed by name (dynamic)
-    providers: Arc<RwLock<HashMap<String, Provider>>>,
-
-    /// Mapping from model name to provider name (dynamic)
-    model_to_provider: Arc<RwLock<HashMap<String, String>>>,
-
-    /// Base URL for Aperture gateway (for auto-generated providers)
+    inner: Arc<RwLock<RegistryInner>>,
     aperture_base_url: String,
 }
 
 impl ProviderRegistry {
-    /// Create a new provider registry with initial providers from config
     pub fn new(providers: Vec<Provider>) -> Self {
         let mut provider_map = HashMap::new();
         let mut model_map = HashMap::new();
@@ -46,75 +43,120 @@ impl ProviderRegistry {
         }
 
         Self {
-            providers: Arc::new(RwLock::new(provider_map)),
-            model_to_provider: Arc::new(RwLock::new(model_map)),
+            inner: Arc::new(RwLock::new(RegistryInner {
+                providers: provider_map,
+                model_to_provider: model_map,
+            })),
             aperture_base_url: String::new(),
         }
     }
 
-    /// Create registry with Aperture gateway URL for auto-discovery
     pub fn with_aperture_url(providers: Vec<Provider>, aperture_url: String) -> Self {
         let mut registry = Self::new(providers);
         registry.aperture_base_url = aperture_url;
         registry
     }
 
-    /// Update registry from discovered models (called by auto-refresh)
     pub async fn update_from_discovery(
         &self,
         models_by_provider: &HashMap<String, Vec<String>>,
         aperture_url: &str,
     ) {
-        let mut providers = self.providers.write().await;
-        let mut model_map = self.model_to_provider.write().await;
+        let mut inner = self.inner.write().await;
 
-        // Track which providers we've seen
-        let mut seen_providers: HashSet<String> = HashSet::new();
+        // Track which providers are in this update
+        let active_providers: std::collections::HashSet<_> =
+            models_by_provider.keys().cloned().collect();
+
+        // Remove stale providers that are no longer in discovery
+        let previous_count = inner.providers.len();
+        inner
+            .providers
+            .retain(|name, _| active_providers.contains(name));
+        inner
+            .model_to_provider
+            .retain(|_, provider| active_providers.contains(provider));
+
+        let removed_count = previous_count - inner.providers.len();
+        if removed_count > 0 {
+            info!("Removed {} stale providers from registry", removed_count);
+        }
 
         for (provider_id, model_ids) in models_by_provider {
-            seen_providers.insert(provider_id.clone());
-
-            // Check if provider already exists (from config)
-            let provider_exists = providers.contains_key(provider_id);
+            let provider_exists = inner.providers.contains_key(provider_id);
 
             if !provider_exists {
-                // Auto-create provider from discovery
                 let new_provider = Provider {
                     name: provider_id.clone(),
                     base_url: aperture_url.to_string(),
                     api_key: None,
-                    endpoint_style: EndpointStyle::Anthropic, // Aperture uses Anthropic style
+                    endpoint_style: EndpointStyle::OpenaiDirect,
                     models: model_ids.clone(),
                     enabled: true,
                 };
 
-                providers.insert(provider_id.clone(), new_provider);
+                inner.providers.insert(provider_id.clone(), new_provider);
                 info!(
-                    "✨ Auto-added provider '{}' with {} models",
+                    "Auto-added provider '{}' with {} models",
                     provider_id,
                     model_ids.len()
                 );
             } else {
-                // Update existing provider's model list
-                if let Some(provider) = providers.get_mut(provider_id) {
-                    provider.models = model_ids.clone();
+                if let Some(provider) = inner.providers.get_mut(provider_id) {
+                    // Merge discovered models with existing configured models
+                    // instead of replacing the entire list
+                    let existing: std::collections::HashSet<_> =
+                        provider.models.iter().cloned().collect();
+                    for model_id in model_ids {
+                        if !existing.contains(model_id) {
+                            provider.models.push(model_id.clone());
+                        }
+                    }
                 }
             }
 
-            // Update model mappings
+            // Insert discovered models into the routing map
             for model_id in model_ids {
-                model_map.insert(model_id.clone(), provider_id.clone());
+                inner
+                    .model_to_provider
+                    .insert(model_id.clone(), provider_id.clone());
             }
         }
 
-        // Remove providers that no longer exist (only auto-added ones, not config ones)
-        // For now, we keep all providers - removal could be dangerous
+        // Ensure manually-configured models (not in discovery) are also routable
+        let manual_entries: Vec<(String, String)> = inner
+            .providers
+            .iter()
+            .flat_map(|(provider_id, provider)| {
+                provider
+                    .models
+                    .iter()
+                    .map(|m| (m.clone(), provider_id.clone()))
+            })
+            .collect();
 
-        // Log summary
-        let total_models = model_map.len();
-        let total_providers = providers.len();
-        drop(providers);
-        drop(model_map);
+        for (model_id, provider_id) in manual_entries {
+            inner
+                .model_to_provider
+                .entry(model_id)
+                .or_insert(provider_id);
+        }
+
+        let all_valid_models: std::collections::HashSet<String> = inner
+            .providers
+            .values()
+            .flat_map(|p| p.models.iter().cloned())
+            .collect();
+
+        let known_providers: std::collections::HashSet<String> =
+            inner.providers.keys().cloned().collect();
+
+        inner.model_to_provider.retain(|model, provider_id| {
+            all_valid_models.contains(model) && known_providers.contains(provider_id)
+        });
+
+        let total_models = inner.model_to_provider.len();
+        let total_providers = inner.providers.len();
 
         info!(
             "Registry updated: {} providers, {} models",
@@ -122,37 +164,62 @@ impl ProviderRegistry {
         );
     }
 
-    /// Get provider for a specific model name
     pub async fn get_provider_for_model(&self, model: &str) -> Option<Provider> {
-        let model_map = self.model_to_provider.read().await;
-        let providers = self.providers.read().await;
-
-        model_map
+        let inner = self.inner.read().await;
+        inner
+            .model_to_provider
             .get(model)
-            .and_then(|name| providers.get(name).cloned())
+            .and_then(|name| inner.providers.get(name).cloned())
     }
 
-    /// Get a provider by name
     pub async fn get_provider(&self, name: &str) -> Option<Provider> {
-        self.providers.read().await.get(name).cloned()
+        self.inner.read().await.providers.get(name).cloned()
     }
 
-    /// Get all enabled providers
+    pub async fn get_providers_for_model(&self, model: &str) -> Vec<Provider> {
+        let inner = self.inner.read().await;
+        let mut result = Vec::new();
+
+        if let Some(name) = inner.model_to_provider.get(model) {
+            if let Some(provider) = inner.providers.get(name) {
+                if provider.enabled {
+                    result.push(provider.clone());
+                }
+            }
+        }
+
+        for provider in inner.providers.values() {
+            if provider.enabled
+                && provider.models.iter().any(|m| m == model)
+                && !result.iter().any(|r| r.name == provider.name)
+            {
+                result.push(provider.clone());
+            }
+        }
+
+        result
+    }
+
     pub async fn all_providers(&self) -> Vec<Provider> {
-        self.providers.read().await.values().cloned().collect()
-    }
-
-    /// Get all available models across all providers
-    pub async fn all_models(&self) -> Vec<String> {
-        self.model_to_provider
+        self.inner
             .read()
             .await
+            .providers
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub async fn all_models(&self) -> Vec<String> {
+        self.inner
+            .read()
+            .await
+            .model_to_provider
             .keys()
             .cloned()
             .collect()
     }
 
-    /// Build the full endpoint URL for a provider based on endpoint style
     pub fn build_endpoint_url(provider: &Provider, endpoint: &str) -> String {
         let base = provider.base_url.trim_end_matches('/');
 
@@ -170,7 +237,6 @@ impl ProviderRegistry {
         }
     }
 
-    /// Get the default endpoint for a provider based on its style
     pub fn get_default_endpoint(provider: &Provider, endpoint_type: EndpointType) -> &'static str {
         match provider.endpoint_style {
             EndpointStyle::OpenaiV1 => match endpoint_type {
@@ -186,16 +252,11 @@ impl ProviderRegistry {
     }
 }
 
-/// Type of endpoint being requested
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointType {
-    /// OpenAI chat completions endpoint
     ChatCompletions,
-    /// Anthropic messages endpoint
     Messages,
 }
-
-use std::collections::HashSet;
 
 #[cfg(test)]
 mod tests {

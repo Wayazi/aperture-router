@@ -1,12 +1,12 @@
 [package]
 name = "aperture-router"
-version = "0.2.2"
+version = "0.3.1"
 edition = "2021"
 description = "Universal AI router for Tailscale Aperture"
 license = "MIT"
 repository = "https://github.com/Wayazi/aperture-router"
 authors = ["Wayazi"]
-keywords = ["proxy", "ai", "aperture", "tailscale", "anthropic", "openai"]
+keywords = ["proxy", "ai", "tailscale", "anthropic", "openai"]
 categories = ["web-programming::http-server", "api-bindings"]
 readme = "README.md"
 
@@ -38,7 +38,6 @@ toml = "0.8"
 url = "2.5"
 
 # Async utilities
-tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
 
@@ -47,12 +46,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Configuration
-config = "0.15"
 dotenvy = "0.15"
 
 # Error handling
 anyhow = "1"
-thiserror = "2"
+
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -69,19 +67,26 @@ dirs = "5"
 # UUID for request tracking - no wasm
 uuid = { version = "1", features = ["v4"], default-features = false }
 
-# Lazy static initialization for shared client
-once_cell = "1.19"
+# Unix-specific functionality (user/group lookup for secure file operations)
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["user", "fs"] }
 
 [profile.release]
 lto = "thin"
 strip = true
-opt-level = "z"
+opt-level = 3
+codegen-units = 1
+panic = "abort"  # Smaller binary, faster shutdown
+
+# Maximum performance profile (use for benchmarks)
+[profile.release-fast]
+inherits = "release"
+lto = "fat"
+opt-level = 3
 codegen-units = 1
 
 [dev-dependencies]
-tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 wiremock = "0.6"
-mockall = "0.13"
 tempfile = "3"

@@ -97,7 +97,7 @@ mod type_tests {
 
         let request = MessageRequest {
             model: "claude-3-sonnet-20240229".to_string(),
-            max_tokens: 100,
+            max_tokens: Some(100),
             messages: vec![Message {
                 role: "user".to_string(),
                 content: Content::Text("Hello Claude!".to_string()),
@@ -134,7 +134,7 @@ mod type_tests {
         let request: MessageRequest = serde_json::from_str(json).expect("Failed to deserialize");
 
         assert_eq!(request.model, "claude-3-opus-20240229");
-        assert_eq!(request.max_tokens, 200);
+        assert_eq!(request.max_tokens, Some(200));
         assert_eq!(request.messages.len(), 1);
         assert_eq!(request.temperature, Some(0.5));
     }
@@ -249,7 +249,7 @@ mod type_tests {
         let request: MessageRequest = serde_json::from_str(json).expect("Failed to deserialize");
 
         assert_eq!(request.model, "claude-3-sonnet-20240229");
-        assert_eq!(request.max_tokens, 100);
+        assert_eq!(request.max_tokens, Some(100));
         assert!(request.temperature.is_none());
     }
 

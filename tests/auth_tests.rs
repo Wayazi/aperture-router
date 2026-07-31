@@ -23,6 +23,7 @@ mod auth_tests {
             require_auth_in_prod: true,
             max_json_depth: 256,
             max_streaming_size_bytes: 100 * 1024 * 1024,
+            max_messages: 10000,
         };
 
         let cors_config = CorsConfig::default();
@@ -44,6 +45,7 @@ mod auth_tests {
             require_auth_in_prod: true,
             max_json_depth: 256,
             max_streaming_size_bytes: 100 * 1024 * 1024,
+            max_messages: 10000,
         };
 
         let cors_config = CorsConfig::default();
@@ -98,34 +100,31 @@ mod auth_tests {
     }
 
     #[tokio::test]
-    async fn test_check_and_record_failure_within_limits() {
+    async fn test_record_failure_within_limits() {
         let api_keys = vec!["test-api-key-with-sufficient-entropy-32".to_string()];
         let auth_state = create_auth_state(api_keys);
 
         let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
 
-        // Record several failures within limits
         for i in 0..4 {
-            let result = auth_state.check_and_record_failure(client_ip).await;
+            let result = auth_state.record_failure(client_ip).await;
             assert!(result.is_ok(), "Attempt {} should succeed", i);
         }
     }
 
     #[tokio::test]
-    async fn test_check_and_record_failure_exceeds_limit() {
+    async fn test_record_failure_exceeds_limit() {
         let api_keys = vec!["test-api-key-with-sufficient-entropy-32".to_string()];
         let auth_state = create_auth_state(api_keys);
 
         let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
 
-        // Record failures up to limit
         for _ in 0..5 {
-            let result = auth_state.check_and_record_failure(client_ip).await;
+            let result = auth_state.record_failure(client_ip).await;
             assert!(result.is_ok());
         }
 
-        // Next attempt should fail
-        let result = auth_state.check_and_record_failure(client_ip).await;
+        let result = auth_state.record_failure(client_ip).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), StatusCode::TOO_MANY_REQUESTS);
     }
@@ -137,42 +136,29 @@ mod auth_tests {
 
         let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
 
-        // Record some failures
         for _ in 0..3 {
-            auth_state
-                .check_and_record_failure(client_ip)
-                .await
-                .unwrap();
+            auth_state.record_failure(client_ip).await.unwrap();
         }
 
-        // Record success
         auth_state.record_success(client_ip).await;
 
-        // Should be able to make attempts again
-        let result = auth_state.check_and_record_failure(client_ip).await;
-        assert!(result.is_ok());
+        assert!(!auth_state.is_banned(client_ip).await);
     }
 
     #[tokio::test]
-    async fn test_check_and_record_failure_different_ips() {
+    async fn test_record_failure_different_ips() {
         let api_keys = vec!["test-api-key-with-sufficient-entropy-32".to_string()];
         let auth_state = create_auth_state(api_keys);
 
         let ip1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let ip2 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
 
-        // Each IP should have its own counter
         for _ in 0..5 {
-            auth_state.check_and_record_failure(ip1).await.unwrap();
+            auth_state.record_failure(ip1).await.unwrap();
         }
 
-        // IP1 should be rate limited
-        let result1 = auth_state.check_and_record_failure(ip1).await;
-        assert!(result1.is_err());
-
-        // IP2 should still be able to make attempts
-        let result2 = auth_state.check_and_record_failure(ip2).await;
-        assert!(result2.is_ok());
+        assert!(auth_state.is_banned(ip1).await);
+        assert!(!auth_state.is_banned(ip2).await);
     }
 
     #[tokio::test]
@@ -187,6 +173,7 @@ mod auth_tests {
             require_auth_in_prod: true,
             max_json_depth: 256,
             max_streaming_size_bytes: 100 * 1024 * 1024,
+            max_messages: 10000,
         };
 
         let cors_config = CorsConfig::default();
@@ -194,13 +181,11 @@ mod auth_tests {
 
         let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
 
-        // Should fail after 3 attempts
         for _ in 0..3 {
-            assert!(auth_state.check_and_record_failure(client_ip).await.is_ok());
+            assert!(auth_state.record_failure(client_ip).await.is_ok());
         }
 
-        let result = auth_state.check_and_record_failure(client_ip).await;
-        assert!(result.is_err());
+        assert!(auth_state.is_banned(client_ip).await);
     }
 
     #[tokio::test]
@@ -223,6 +208,7 @@ mod auth_tests {
             require_auth_in_prod: true,
             max_json_depth: 256,
             max_streaming_size_bytes: 100 * 1024 * 1024,
+            max_messages: 10000,
         };
 
         let auth_state = AuthState::new(&security_config, &cors_config);
@@ -242,7 +228,7 @@ mod auth_tests {
         let auth_state = create_auth_state(api_keys);
 
         // This should not panic
-        auth_state.start_cleanup_task();
+        auth_state.start_cleanup_task(tokio_util::sync::CancellationToken::new());
 
         // Give it a moment to start
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -288,17 +274,14 @@ mod auth_tests {
             IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)),
         ];
 
-        // Each IP should be able to make 5 attempts
         for ip in &ips {
             for _ in 0..5 {
-                assert!(auth_state.check_and_record_failure(*ip).await.is_ok());
+                assert!(auth_state.record_failure(*ip).await.is_ok());
             }
         }
 
-        // Now all should be rate limited
         for ip in &ips {
-            let result = auth_state.check_and_record_failure(*ip).await;
-            assert!(result.is_err());
+            assert!(auth_state.is_banned(*ip).await);
         }
     }
 
@@ -314,6 +297,7 @@ mod auth_tests {
             require_auth_in_prod: true,
             max_json_depth: 256,
             max_streaming_size_bytes: 100 * 1024 * 1024,
+            max_messages: 10000,
         };
 
         let cors_config = CorsConfig::default();
@@ -354,11 +338,76 @@ mod auth_tests {
         // Admin key should work as admin key
         assert!(auth_state.validate_admin_key("admin-key-with-sufficient-entropy-1234567890"));
 
-        // But admin key should NOT work as regular key
-        assert!(!auth_state.validate_api_key("admin-key-with-sufficient-entropy-1234567890"));
+        // Admin key SHOULD work as regular key too (admin can access all endpoints)
+        assert!(auth_state.validate_api_key("admin-key-with-sufficient-entropy-1234567890"));
 
-        // And regular key should work as regular key
+        // Regular key should work as regular key
         assert!(auth_state.validate_api_key("regular-key-with-sufficient-entropy-123456"));
+    }
+
+    // ============================================
+    // Tests for admin-only auth fix (Task 1.1)
+    // ============================================
+
+    #[tokio::test]
+    async fn test_is_enabled_with_only_admin_keys() {
+        // Only admin keys configured, no regular keys
+        let admin_keys = vec!["admin-key-with-sufficient-entropy-1234567890".to_string()];
+        let auth_state = create_auth_state_with_admin_keys(vec![], admin_keys);
+
+        // is_enabled() should return TRUE even without regular keys
+        assert!(
+            auth_state.is_enabled(),
+            "is_enabled() should return true when only admin keys are configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_admin_key_works_for_regular_endpoint() {
+        // Only admin keys configured
+        let admin_keys = vec!["admin-key-with-sufficient-entropy-1234567890".to_string()];
+        let auth_state = create_auth_state_with_admin_keys(vec![], admin_keys);
+
+        // Admin key should validate for regular endpoint
+        assert!(
+            auth_state.validate_api_key("admin-key-with-sufficient-entropy-1234567890"),
+            "Admin key should work for regular endpoints"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_auth_required_when_only_admin_keys_set() {
+        // This verifies the core bug fix:
+        // Before: is_enabled() returned false when only admin keys were set
+        // After: is_enabled() returns true, so auth is required
+
+        let admin_keys = vec!["admin-key-with-sufficient-entropy-1234567890".to_string()];
+        let auth_state = create_auth_state_with_admin_keys(vec![], admin_keys);
+
+        // Auth should be enabled
+        assert!(auth_state.is_enabled());
+
+        // Valid admin key should pass regular auth
+        assert!(auth_state.validate_api_key("admin-key-with-sufficient-entropy-1234567890"));
+
+        // Invalid key should fail
+        assert!(!auth_state.validate_api_key("invalid-key-12345678901234567890123"));
+    }
+
+    #[tokio::test]
+    async fn test_regular_key_cannot_access_admin_endpoints() {
+        // Only regular keys configured
+        let regular_keys = vec!["regular-key-with-sufficient-entropy-123456".to_string()];
+        let auth_state = create_auth_state_with_admin_keys(regular_keys, vec![]);
+
+        // Regular key works for regular endpoints
+        assert!(auth_state.validate_api_key("regular-key-with-sufficient-entropy-123456"));
+
+        // Regular key does NOT work for admin endpoints
+        assert!(!auth_state.validate_admin_key("regular-key-with-sufficient-entropy-123456"));
+
+        // Admin endpoints are disabled when no admin keys are set
+        assert!(!auth_state.is_admin_enabled());
     }
 
     #[tokio::test]

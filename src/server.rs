@@ -14,39 +14,85 @@ use tower_http::{
     cors::CorsLayer, limit::RequestBodyLimitLayer, set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
-use tracing::info;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
+
+type BackgroundHandle = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
 
 use crate::{
     config::Config, discovery::models::ModelDiscovery, middleware::AuthState,
     proxy::client::ProxyClient, ProviderRegistry,
 };
 
-/// Middleware to add request ID for tracing
+/// Header name for session ID (client can provide to group requests)
+const SESSION_ID_HEADER: &str = "x-session-id";
+
+/// Middleware to add request ID and session ID for tracing
+///
+/// Session ID allows grouping multiple requests from the same client session.
+/// Clients can send `X-Session-ID` header to maintain session continuity.
+/// If not provided, a new session ID is generated and returned in response.
 async fn add_request_id(request: Request, next: Next) -> Response {
     let request_id = Uuid::new_v4();
-    
-    // Add request ID to tracing span
+
+    // Get or generate session ID
+    // Client can provide X-Session-ID header to maintain session across requests
+    let session_id = if let Some(header_value) = request.headers().get(SESSION_ID_HEADER) {
+        match header_value.to_str() {
+            Ok(s) => match Uuid::parse_str(s) {
+                Ok(uuid) => uuid,
+                Err(e) => {
+                    debug!(
+                        "Invalid session ID format provided: {}, generating new one",
+                        e
+                    );
+                    Uuid::new_v4()
+                }
+            },
+            Err(_) => {
+                debug!("Session ID header contains non-UTF8 characters, generating new one");
+                Uuid::new_v4()
+            }
+        }
+    } else {
+        Uuid::new_v4()
+    };
+
+    // Add both IDs to tracing span for log grouping
     let span = tracing::info_span!(
         "request",
         request_id = %request_id,
+        session_id = %session_id,
         method = %request.method(),
         path = %request.uri().path(),
     );
-    
-    // Log request start
+
+    // Log request start with session context
     info!(parent: &span, "Request started");
-    
+
     // Run the request in the span
-    let response = next.run(request).await;
-    
+    let mut response = next.run(request).await;
+
+    // Add session ID to response headers so client can reuse it
+    match axum::http::HeaderValue::from_str(&session_id.to_string()) {
+        Ok(header_value) => {
+            response.headers_mut().insert(
+                axum::http::HeaderName::from_static(SESSION_ID_HEADER),
+                header_value,
+            );
+        }
+        Err(e) => {
+            warn!("Failed to set session ID response header: {}", e);
+        }
+    }
+
     // Log request completion
     info!(
         parent: &span,
         status = %response.status(),
         "Request completed"
     );
-    
+
     response
 }
 
@@ -60,7 +106,9 @@ pub struct AppState {
     pub provider_registry: Arc<ProviderRegistry>,
     pub cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub refresh_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub rate_limit_cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub shutdown_token: CancellationToken,
+    pub rate_limiter: crate::middleware::RateLimiter,
 }
 
 impl AppState {
@@ -73,7 +121,9 @@ impl AppState {
         provider_registry: Arc<ProviderRegistry>,
         cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
         refresh_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+        rate_limit_cleanup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
         shutdown_token: CancellationToken,
+        rate_limiter: crate::middleware::RateLimiter,
     ) -> Self {
         Self {
             config,
@@ -83,7 +133,9 @@ impl AppState {
             provider_registry,
             cleanup_handle,
             refresh_handle,
+            rate_limit_cleanup_handle,
             shutdown_token,
+            rate_limiter,
         }
     }
 }
@@ -94,6 +146,7 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
         axum::http::header::AUTHORIZATION,
         axum::http::header::ACCEPT,
         axum::http::HeaderName::from_static("x-api-key"),
+        axum::http::HeaderName::from_static("x-session-id"),
     ];
 
     let methods = [
@@ -151,13 +204,20 @@ fn create_cors_layer(config: &crate::config::CorsConfig) -> CorsLayer {
     }
 }
 
+pub struct RouterHandles {
+    pub router: Router,
+    pub shutdown_token: CancellationToken,
+    pub cleanup_handle: BackgroundHandle,
+    pub refresh_handle: BackgroundHandle,
+    pub rate_limit_cleanup_handle: BackgroundHandle,
+}
+
 /// Create the router with all routes and middleware
-/// Returns (Router, CancellationToken) for graceful shutdown
-pub fn create_router(
-    config: Config,
-    discovery: Arc<ModelDiscovery>,
-) -> (Router, CancellationToken) {
+pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> RouterHandles {
     info!("Creating router with authentication and CORS layers");
+
+    // Wrap config in Arc immediately to avoid cloning the full struct
+    let config = Arc::new(config);
 
     // Create provider registry with Aperture URL for auto-discovery
     let provider_registry = Arc::new(ProviderRegistry::with_aperture_url(
@@ -180,7 +240,9 @@ pub fn create_router(
     let shutdown_token = CancellationToken::new();
 
     // Start cleanup task for rate limiting
-    let cleanup_handle = Arc::new(Mutex::new(Some(auth_state.start_cleanup_task())));
+    let cleanup_handle = Arc::new(Mutex::new(Some(
+        auth_state.start_cleanup_task(shutdown_token.clone()),
+    )));
 
     // Start model refresh task with registry sync and shutdown support
     let refresh_handle = Arc::new(Mutex::new(Some(
@@ -191,8 +253,21 @@ pub fn create_router(
     // Setup CORS
     let cors = create_cors_layer(&config.cors);
 
+    // Create rate limiter for per-client request limiting
+    let rate_limiter = crate::middleware::RateLimiter::new(
+        config.rate_limit.burst_size as usize,
+        std::time::Duration::from_secs(
+            config.rate_limit.burst_size / config.rate_limit.requests_per_second.max(1),
+        ),
+    );
+
+    // Start rate limiter cleanup task
+    let rate_limit_cleanup_handle = Arc::new(Mutex::new(Some(
+        rate_limiter.start_cleanup_task(shutdown_token.clone()),
+    )));
+
     // Create shared config and auth state (single instance each)
-    let shared_config = Arc::new(config.clone());
+    let shared_config = Arc::clone(&config);
     let shared_auth_state = Arc::new(auth_state.clone());
 
     // Create a single AppState wrapped in Arc (reduces clones)
@@ -204,7 +279,9 @@ pub fn create_router(
         provider_registry.clone(),
         cleanup_handle.clone(),
         refresh_handle.clone(),
+        rate_limit_cleanup_handle.clone(),
         shutdown_token.clone(),
+        rate_limiter.clone(),
     ));
 
     // Admin routes - uses same state via Arc clone (cheap reference increment)
@@ -236,7 +313,11 @@ pub fn create_router(
             post(crate::routes::messages::anthropic_messages),
         )
         .route_layer(axum::middleware::from_fn_with_state(
-            (Arc::clone(&shared_config), Arc::clone(&shared_auth_state)),
+            (
+                Arc::clone(&shared_config),
+                Arc::clone(&shared_auth_state),
+                rate_limiter,
+            ),
             crate::middleware::auth_middleware,
         ))
         .with_state((*app_state).clone());
@@ -267,6 +348,14 @@ pub fn create_router(
             axum::http::HeaderName::from_static("strict-transport-security"),
             axum::http::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
         ))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::HeaderName::from_static("referrer-policy"),
+            axum::http::HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::HeaderName::from_static("permissions-policy"),
+            axum::http::HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+        ))
         .layer(RequestBodyLimitLayer::new(
             (config.security.max_body_size_bytes as u64)
                 .try_into()
@@ -274,5 +363,11 @@ pub fn create_router(
         ))
         .layer(cors);
 
-    (router, shutdown_token)
+    RouterHandles {
+        router,
+        shutdown_token,
+        cleanup_handle,
+        refresh_handle,
+        rate_limit_cleanup_handle,
+    }
 }

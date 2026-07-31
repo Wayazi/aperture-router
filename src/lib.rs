@@ -6,6 +6,7 @@ pub mod middleware;
 pub mod provider;
 pub mod proxy;
 pub mod routes;
+pub mod security;
 pub mod server;
 pub mod types;
 
@@ -18,7 +19,6 @@ mod lib_tests {
 
     #[test]
     fn test_config_module_exports() {
-        // Verify that config module is properly exported
         let config = Config::default();
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 8765);
@@ -26,7 +26,6 @@ mod lib_tests {
 
     #[test]
     fn test_module_structure() {
-        // Verify that all modules are accessible
         let _ = config::Config::default();
     }
 }

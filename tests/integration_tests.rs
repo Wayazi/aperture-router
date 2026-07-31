@@ -3,18 +3,34 @@
 
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{Method, Request, StatusCode},
 };
 use http_body_util::BodyExt;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tower::ServiceExt;
 use wiremock::matchers::{method, path};
 use wiremock::{MockServer, ResponseTemplate};
 
-use aperture_router::{config::Config, discovery::models::ModelDiscovery, server::create_router};
+use aperture_router::{
+    config::Config,
+    discovery::models::ModelDiscovery,
+    server::{self, create_router},
+};
 
 fn create_test_router(config: Config, discovery: std::sync::Arc<ModelDiscovery>) -> axum::Router {
-    let (router, _shutdown_token) = create_router(config, discovery);
+    let server::RouterHandles { router, .. } = create_router(config, discovery);
     router
+}
+
+/// Add ConnectInfo extension to a request for testing
+/// This simulates what the server does with into_make_service_with_connect_info
+fn add_connect_info<B>(mut request: Request<B>) -> Request<B> {
+    request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+        12345,
+    )));
+    request
 }
 
 #[cfg(test)]
@@ -37,7 +53,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_full_health_check_flow() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -46,7 +62,7 @@ mod integration_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
 
@@ -60,7 +76,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_authentication_required_endpoint() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Try to access protected endpoint without auth
@@ -73,7 +89,7 @@ mod integration_tests {
             ))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Should return 401 Unauthorized
         // In test environment, returns BAD_GATEWAY due to no upstream server
@@ -83,7 +99,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_authentication_with_valid_key() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Access protected endpoint with valid API key
@@ -100,7 +116,7 @@ mod integration_tests {
             ))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // In test environment without upstream server, this returns BAD_GATEWAY
         // In production with proper upstream, would return UNAUTHORIZED
@@ -110,7 +126,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_authentication_with_invalid_key() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Try with invalid API key
@@ -124,7 +140,7 @@ mod integration_tests {
             ))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Should return 401 Unauthorized
         // In test environment, returns BAD_GATEWAY due to no upstream server
@@ -134,7 +150,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_authentication_with_x_api_key_header() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Use x-api-key header instead of Authorization
@@ -148,7 +164,7 @@ mod integration_tests {
             ))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // In test environment without upstream server, this returns BAD_GATEWAY
         // In production with proper upstream, would return UNAUTHORIZED
@@ -158,7 +174,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_rate_limiting_on_failed_auth() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Make multiple failed auth attempts from same "IP"
@@ -172,7 +188,7 @@ mod integration_tests {
                 .body(Body::from(r#"{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Test"}]}"#))
                 .unwrap();
 
-            let response = app_clone.oneshot(request).await.unwrap();
+            let response = app_clone.oneshot(add_connect_info(request)).await.unwrap();
 
             // All requests should fail due to auth or upstream issues
             assert!(!response.status().is_success());
@@ -182,7 +198,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_no_auth_when_disabled() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Access protected endpoint without auth when auth is disabled
@@ -195,7 +211,7 @@ mod integration_tests {
             ))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Should not be unauthorized (will fail for other reasons, likely proxy)
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
@@ -204,7 +220,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_anthropic_endpoint_with_auth() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Access Anthropic endpoint with valid auth
@@ -216,7 +232,7 @@ mod integration_tests {
             .body(Body::from(r#"{"model": "claude-3-sonnet-20240229", "max_tokens": 100, "messages": [{"role": "user", "content": "Test"}]}"#))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Should not be unauthorized
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
@@ -225,7 +241,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_streaming_endpoint_with_auth() {
         let config = create_test_config_with_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Access streaming endpoint with valid auth
@@ -237,7 +253,7 @@ mod integration_tests {
             .body(Body::from(r#"{"model": "gpt-3.5-turbo", "stream": true, "messages": [{"role": "user", "content": "Test"}]}"#))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Should not be unauthorized
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
@@ -259,7 +275,7 @@ mod integration_tests {
 
         config.aperture.base_url = mock_server.uri();
 
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Request without stream flag should fail
@@ -272,14 +288,14 @@ mod integration_tests {
             ))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
     async fn test_concurrent_requests_handling() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let mut handles = vec![];
@@ -294,7 +310,7 @@ mod integration_tests {
                     .body(Body::empty())
                     .unwrap();
 
-                app_clone.oneshot(request).await
+                app_clone.oneshot(add_connect_info(request)).await
             });
             handles.push(handle);
         }
@@ -309,7 +325,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_error_handling_invalid_json() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Send invalid JSON
@@ -320,7 +336,7 @@ mod integration_tests {
             .body(Body::from(r#"{"invalid": json}"#))
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Should return a client error
         assert!(response.status().is_client_error() || response.status().is_server_error());
@@ -329,7 +345,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_cors_preflight_request() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -341,7 +357,7 @@ mod integration_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Check CORS headers
         let allow_origin = response.headers().get("access-control-allow-origin");
@@ -356,7 +372,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_security_headers() {
         let config = create_test_config_no_auth();
-        let discovery = ModelDiscovery::new(config.aperture.clone()).unwrap();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
         let app = create_test_router(config, std::sync::Arc::new(discovery));
 
         let request = Request::builder()
@@ -365,9 +381,157 @@ mod integration_tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
 
         // Verify response is successful
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // ============================================
+    // Session ID Tests
+    // ============================================
+
+    #[tokio::test]
+    async fn test_session_id_generated_when_not_provided() {
+        let config = create_test_config_no_auth();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        // Request without x-session-id header
+        let request = Request::builder()
+            .uri("/health")
+            .method(Method::GET)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
+
+        // Response should contain x-session-id header
+        let session_id = response.headers().get("x-session-id");
+        assert!(
+            session_id.is_some(),
+            "Response should contain x-session-id header"
+        );
+
+        // Session ID should be a valid UUID
+        let session_id_str = session_id.unwrap().to_str().unwrap();
+        assert!(
+            uuid::Uuid::parse_str(session_id_str).is_ok(),
+            "Session ID should be a valid UUID"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_id_reused_when_valid() {
+        let config = create_test_config_no_auth();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        let test_session_id = uuid::Uuid::new_v4();
+
+        // Request with valid x-session-id header
+        let request = Request::builder()
+            .uri("/health")
+            .method(Method::GET)
+            .header("x-session-id", test_session_id.to_string())
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
+
+        // Response should echo the same session ID
+        let response_session_id = response
+            .headers()
+            .get("x-session-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            response_session_id,
+            test_session_id.to_string(),
+            "Response should echo the provided session ID"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_id_rejected_when_malformed() {
+        let config = create_test_config_no_auth();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        // Request with invalid session ID format
+        let request = Request::builder()
+            .uri("/health")
+            .method(Method::GET)
+            .header("x-session-id", "not-a-valid-uuid")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
+
+        // Response should contain a NEW valid session ID (not the malformed one)
+        let response_session_id = response
+            .headers()
+            .get("x-session-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_ne!(
+            response_session_id, "not-a-valid-uuid",
+            "Response should not echo malformed session ID"
+        );
+        assert!(
+            uuid::Uuid::parse_str(response_session_id).is_ok(),
+            "Response should contain a valid UUID"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_request_id_unique_per_request() {
+        let config = create_test_config_no_auth();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        // Make two requests with same session ID
+        let test_session_id = uuid::Uuid::new_v4();
+
+        let request1 = Request::builder()
+            .uri("/health")
+            .method(Method::GET)
+            .header("x-session-id", test_session_id.to_string())
+            .body(Body::empty())
+            .unwrap();
+
+        let request2 = Request::builder()
+            .uri("/health")
+            .method(Method::GET)
+            .header("x-session-id", test_session_id.to_string())
+            .body(Body::empty())
+            .unwrap();
+
+        let response1 = app.clone().oneshot(request1).await.unwrap();
+        let response2 = app.oneshot(request2).await.unwrap();
+
+        // Both should have same session ID
+        let session1 = response1
+            .headers()
+            .get("x-session-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let session2 = response2
+            .headers()
+            .get("x-session-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            session1, session2,
+            "Session ID should be the same across requests"
+        );
+
+        // Both should succeed
+        assert_eq!(response1.status(), StatusCode::OK);
+        assert_eq!(response2.status(), StatusCode::OK);
     }
 }
