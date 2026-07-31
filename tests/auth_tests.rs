@@ -23,6 +23,7 @@ mod auth_tests {
             require_auth_in_prod: true,
             max_json_depth: 256,
             max_streaming_size_bytes: 100 * 1024 * 1024,
+            max_messages: 10000,
         };
 
         let cors_config = CorsConfig::default();
@@ -44,6 +45,7 @@ mod auth_tests {
             require_auth_in_prod: true,
             max_json_depth: 256,
             max_streaming_size_bytes: 100 * 1024 * 1024,
+            max_messages: 10000,
         };
 
         let cors_config = CorsConfig::default();
@@ -171,6 +173,7 @@ mod auth_tests {
             require_auth_in_prod: true,
             max_json_depth: 256,
             max_streaming_size_bytes: 100 * 1024 * 1024,
+            max_messages: 10000,
         };
 
         let cors_config = CorsConfig::default();
@@ -205,6 +208,7 @@ mod auth_tests {
             require_auth_in_prod: true,
             max_json_depth: 256,
             max_streaming_size_bytes: 100 * 1024 * 1024,
+            max_messages: 10000,
         };
 
         let auth_state = AuthState::new(&security_config, &cors_config);
@@ -293,6 +297,7 @@ mod auth_tests {
             require_auth_in_prod: true,
             max_json_depth: 256,
             max_streaming_size_bytes: 100 * 1024 * 1024,
+            max_messages: 10000,
         };
 
         let cors_config = CorsConfig::default();
@@ -333,11 +338,76 @@ mod auth_tests {
         // Admin key should work as admin key
         assert!(auth_state.validate_admin_key("admin-key-with-sufficient-entropy-1234567890"));
 
-        // But admin key should NOT work as regular key
-        assert!(!auth_state.validate_api_key("admin-key-with-sufficient-entropy-1234567890"));
+        // Admin key SHOULD work as regular key too (admin can access all endpoints)
+        assert!(auth_state.validate_api_key("admin-key-with-sufficient-entropy-1234567890"));
 
-        // And regular key should work as regular key
+        // Regular key should work as regular key
         assert!(auth_state.validate_api_key("regular-key-with-sufficient-entropy-123456"));
+    }
+
+    // ============================================
+    // Tests for admin-only auth fix (Task 1.1)
+    // ============================================
+
+    #[tokio::test]
+    async fn test_is_enabled_with_only_admin_keys() {
+        // Only admin keys configured, no regular keys
+        let admin_keys = vec!["admin-key-with-sufficient-entropy-1234567890".to_string()];
+        let auth_state = create_auth_state_with_admin_keys(vec![], admin_keys);
+
+        // is_enabled() should return TRUE even without regular keys
+        assert!(
+            auth_state.is_enabled(),
+            "is_enabled() should return true when only admin keys are configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_admin_key_works_for_regular_endpoint() {
+        // Only admin keys configured
+        let admin_keys = vec!["admin-key-with-sufficient-entropy-1234567890".to_string()];
+        let auth_state = create_auth_state_with_admin_keys(vec![], admin_keys);
+
+        // Admin key should validate for regular endpoint
+        assert!(
+            auth_state.validate_api_key("admin-key-with-sufficient-entropy-1234567890"),
+            "Admin key should work for regular endpoints"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_auth_required_when_only_admin_keys_set() {
+        // This verifies the core bug fix:
+        // Before: is_enabled() returned false when only admin keys were set
+        // After: is_enabled() returns true, so auth is required
+
+        let admin_keys = vec!["admin-key-with-sufficient-entropy-1234567890".to_string()];
+        let auth_state = create_auth_state_with_admin_keys(vec![], admin_keys);
+
+        // Auth should be enabled
+        assert!(auth_state.is_enabled());
+
+        // Valid admin key should pass regular auth
+        assert!(auth_state.validate_api_key("admin-key-with-sufficient-entropy-1234567890"));
+
+        // Invalid key should fail
+        assert!(!auth_state.validate_api_key("invalid-key-12345678901234567890123"));
+    }
+
+    #[tokio::test]
+    async fn test_regular_key_cannot_access_admin_endpoints() {
+        // Only regular keys configured
+        let regular_keys = vec!["regular-key-with-sufficient-entropy-123456".to_string()];
+        let auth_state = create_auth_state_with_admin_keys(regular_keys, vec![]);
+
+        // Regular key works for regular endpoints
+        assert!(auth_state.validate_api_key("regular-key-with-sufficient-entropy-123456"));
+
+        // Regular key does NOT work for admin endpoints
+        assert!(!auth_state.validate_admin_key("regular-key-with-sufficient-entropy-123456"));
+
+        // Admin endpoints are disabled when no admin keys are set
+        assert!(!auth_state.is_admin_enabled());
     }
 
     #[tokio::test]

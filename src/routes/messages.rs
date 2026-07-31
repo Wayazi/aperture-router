@@ -406,8 +406,20 @@ fn build_anthropic_sse(
 /// Anthropic messages endpoint with multi-provider support and format conversion
 pub async fn anthropic_messages(
     State(state): State<AppState>,
-    Json(request): Json<MessageRequest>,
+    Json(mut request): Json<MessageRequest>,
 ) -> impl axum::response::IntoResponse {
+    // Resolve model alias before validation
+    let original_model = request.model.clone();
+    let resolved_model = state.config.resolve_model_alias(&request.model);
+    if resolved_model != original_model {
+        debug!(
+            "Resolved model alias: {} -> {}",
+            original_model, resolved_model
+        );
+        request.model = resolved_model;
+    }
+
+    // Validate model name format first
     if let Err(response) = validate_model_or_error(&request) {
         return *response;
     }
@@ -446,14 +458,18 @@ pub async fn anthropic_messages(
     }
 
     // Validate messages
-    const MAX_MESSAGES: usize = 1000;
-    if request.messages.len() > MAX_MESSAGES {
-        warn!("Too many messages: {}", request.messages.len());
+    let max_messages = state.config.security.max_messages;
+    if request.messages.len() > max_messages {
+        warn!(
+            "Too many messages: {} (max {})",
+            request.messages.len(),
+            max_messages
+        );
         return (
             StatusCode::BAD_REQUEST,
             axum::Json(serde_json::json!({
                 "error": {
-                    "message": format!("Too many messages (max {})", MAX_MESSAGES),
+                    "message": format!("Too many messages (max {})", max_messages),
                     "type": "invalid_request_error",
                     "code": "too_many_messages"
                 }
