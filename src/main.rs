@@ -3,18 +3,25 @@
 
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
-use tracing::info;
+use tracing::{debug, info};
 
 use aperture_router::{config::Config, discovery::models::ModelDiscovery, server};
+
+/// Re-export from cli module for consistency
+use aperture_router::cli::{is_running_elevated, SYSTEM_CONFIG_PATH};
 
 #[derive(Parser, Debug)]
 #[command(name = "aperture-router")]
 #[command(about = "Universal AI router for Tailscale Aperture", long_about = None)]
 #[command(version)]
 struct Cli {
-    /// Config file path
-    #[arg(short, long, global = true, default_value = "config.toml")]
-    config: String,
+    /// Config file path (defaults to system path when running as root)
+    #[arg(short, long, global = true)]
+    config: Option<String>,
+
+    /// Use system-wide config at /etc/aperture-router/config.toml
+    #[arg(long, global = true)]
+    system: bool,
 
     /// Enable debug mode
     #[arg(short, long, global = true)]
@@ -22,6 +29,19 @@ struct Cli {
 
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+impl Cli {
+    /// Get the resolved config path
+    fn config_path(&self) -> String {
+        if let Some(ref path) = self.config {
+            path.clone()
+        } else if self.system || is_running_elevated() {
+            SYSTEM_CONFIG_PATH.to_string()
+        } else {
+            "config.toml".to_string()
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -131,12 +151,15 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(&log_filter)
         .init();
 
+    // Get config path once (avoids partial move issues)
+    let config_path = cli.config_path();
+
     match cli.command {
         None | Some(Commands::Run) => {
-            run_server(&cli.config).await?;
+            run_server(&config_path).await?;
         }
         Some(Commands::Config { command }) => {
-            handle_config_command(command, &cli.config).await?;
+            handle_config_command(command, &config_path).await?;
         }
     }
 
@@ -161,6 +184,9 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
                 if !key.is_empty() {
                     config.security.api_keys = vec![key];
                 }
+                // Zeroize the environment variable after loading
+                // Prevents key from being visible in /proc/[pid]/environ
+                std::env::remove_var("APERTURE_API_KEY");
             }
 
             // Allow no auth
@@ -193,7 +219,7 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
         }
     };
 
-    info!("Aperture gateway: {}", config.aperture.base_url);
+    debug!("Aperture gateway: {}", config.aperture.base_url);
     info!("Server address: {}", config.server_addr()?);
 
     // Check authentication status
@@ -205,7 +231,7 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
     }
 
     // Initialize and fetch models
-    let discovery = Arc::new(ModelDiscovery::new(config.aperture.clone())?);
+    let discovery = Arc::new(ModelDiscovery::new(config.aperture.clone(), &config.http)?);
     info!("Fetching models from Aperture...");
     let snapshot = discovery.fetch_models().await?;
     info!(
@@ -220,16 +246,67 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
     }
 
     // Create router (with auto-refresh background task)
-    let (app, shutdown_token) = server::create_router(config.clone(), Arc::clone(&discovery));
+    let server::RouterHandles {
+        router: app,
+        shutdown_token,
+        cleanup_handle,
+        refresh_handle,
+        rate_limit_cleanup_handle,
+    } = server::create_router(config.clone(), Arc::clone(&discovery));
 
     // Start server with graceful shutdown
     let addr = config.server_addr()?;
     info!("Listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown_token))
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(shutdown_token.clone()))
+    .await?;
+
+    // Signal background tasks to stop and wait for graceful shutdown
+    info!("Signaling background tasks to stop...");
+    shutdown_token.cancel();
+
+    // Wait for background tasks to complete
+    info!("Waiting for background tasks to complete...");
+
+    // Join cleanup task
+    {
+        let handle = cleanup_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            match handle.await {
+                Ok(()) => info!("Cleanup task completed successfully"),
+                Err(e) => tracing::error!("Cleanup task panicked: {:?}", e),
+            }
+        }
+    }
+
+    // Join refresh task
+    {
+        let handle = refresh_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            match handle.await {
+                Ok(()) => info!("Refresh task completed successfully"),
+                Err(e) => tracing::error!("Refresh task panicked: {:?}", e),
+            }
+        }
+    }
+
+    // Join rate limit cleanup task
+    {
+        let handle = rate_limit_cleanup_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            match handle.await {
+                Ok(()) => info!("Rate limit cleanup task completed successfully"),
+                Err(e) => tracing::error!("Rate limit cleanup task panicked: {:?}", e),
+            }
+        }
+    }
+
+    info!("Server shutdown complete");
 
     Ok(())
 }

@@ -6,11 +6,14 @@ use reqwest::Client;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tracing::{debug, error, info};
+use std::time::Duration;
+use tokio::net;
+use tracing::{debug, error, info, warn};
 use url::Url;
 
-use crate::config::{ApertureConfig, HttpConfig};
+use crate::config::{ApertureConfig, EndpointStyle, HttpConfig};
 use crate::http_client::{create_client_with_timeouts, is_allowed_endpoint};
+use crate::security::{is_internal_ip, is_internal_ip_strict, is_metadata_endpoint};
 
 /// HTTP client for proxying requests to Aperture
 #[derive(Clone)]
@@ -18,6 +21,7 @@ pub struct ProxyClient {
     client: Client,
     aperture_config: ApertureConfig,
     max_streaming_size_bytes: usize,
+    request_timeout: Duration,
 }
 
 impl ProxyClient {
@@ -70,10 +74,13 @@ impl ProxyClient {
         )
         .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {}", e))?;
 
+        let request_timeout = Duration::from_secs(http_config.request_timeout_secs);
+
         Ok(Self {
             client,
             aperture_config,
             max_streaming_size_bytes,
+            request_timeout,
         })
     }
 
@@ -103,11 +110,12 @@ impl ProxyClient {
         // Return error for non-success status codes
         if !response.status().is_success() {
             let status = response.status();
-            error!("Upstream request to {} failed with status: {}", endpoint, status);
+            error!(
+                "Upstream request to {} failed with status: {}",
+                endpoint, status
+            );
             // Log detailed error internally, return generic error to client
-            return Err(anyhow::anyhow!(
-                "Service temporarily unavailable"
-            ));
+            return Err(anyhow::anyhow!("Service temporarily unavailable"));
         }
 
         info!("Request succeeded with status: {}", response.status());
@@ -140,7 +148,10 @@ impl ProxyClient {
         // Check for non-success status codes
         if !response.status().is_success() {
             let status = response.status();
-            error!("Upstream streaming request to {} failed with status: {}", endpoint, status);
+            error!(
+                "Upstream streaming request to {} failed with status: {}",
+                endpoint, status
+            );
             // Return generic error to client (detailed error logged internally)
             return Ok(Box::pin(stream::once(async move {
                 Err(anyhow::anyhow!("Service temporarily unavailable"))
@@ -166,7 +177,7 @@ impl ProxyClient {
                     let chunk_size = bytes.len();
                     loop {
                         let current = total_bytes.load(Ordering::SeqCst);
-                        
+
                         // Check if adding this chunk would exceed the limit
                         if current + chunk_size > max_size {
                             return Err(anyhow::anyhow!(
@@ -175,7 +186,7 @@ impl ProxyClient {
                                 current / 1024 / 1024
                             ));
                         }
-                        
+
                         // Try to atomically update the counter
                         match total_bytes.compare_exchange(
                             current,
@@ -183,7 +194,7 @@ impl ProxyClient {
                             Ordering::SeqCst,
                             Ordering::SeqCst,
                         ) {
-                            Ok(_) => break, // Successfully updated
+                            Ok(_) => break,     // Successfully updated
                             Err(_) => continue, // Another thread updated, retry
                         }
                     }
@@ -215,6 +226,7 @@ impl ProxyClient {
         url: &str,
         body: Vec<u8>,
         api_key: Option<&str>,
+        endpoint_style: EndpointStyle,
     ) -> anyhow::Result<reqwest::Response> {
         // Validate URL is properly formed
         let parsed_url = Url::parse(url)?;
@@ -230,8 +242,7 @@ impl ProxyClient {
         // 1. Always block cloud metadata endpoints (169.254.169.254, etc.)
         // 2. Block internal IPs (private, loopback, link-local)
         //    Exception: CGN range 100.64.0.0/10 is allowed for Tailscale providers
-        // 3. Admin-configured providers are trusted, but we validate resolved hosts
-        //    as defense-in-depth against DNS rebinding attacks
+        // 3. DNS rebinding protection: resolve and validate IPs at request time
         if let Some(host) = parsed_url.host_str() {
             // Always block metadata endpoints regardless of provider config
             if is_metadata_endpoint(host) {
@@ -251,6 +262,16 @@ impl ProxyClient {
                         ip
                     ));
                 }
+            } else {
+                // For hostname-based URLs, resolve DNS and validate IPs (DNS rebinding protection)
+                let port = parsed_url
+                    .port()
+                    .unwrap_or(if parsed_url.scheme() == "https" {
+                        443
+                    } else {
+                        80
+                    });
+                validate_resolved_ips(host, port).await?;
             }
         }
 
@@ -261,9 +282,8 @@ impl ProxyClient {
             .post(url)
             .header("Content-Type", "application/json");
 
-        // Add API key if provided
         if let Some(key) = api_key {
-            request = request.header("x-api-key", key);
+            request = add_auth_header(request, key, endpoint_style);
         }
 
         let response = request.body(body).send().await?;
@@ -273,9 +293,7 @@ impl ProxyClient {
             let status = response.status();
             error!("Upstream request to {} failed with status: {}", url, status);
             // Log detailed error internally, return generic error to client
-            return Err(anyhow::anyhow!(
-                "Service temporarily unavailable"
-            ));
+            return Err(anyhow::anyhow!("Service temporarily unavailable"));
         }
 
         info!(
@@ -286,10 +304,162 @@ impl ProxyClient {
         Ok(response)
     }
 
-    /// Validate endpoint and return parsed URL
-    /// Performs endpoint whitelist check, URL parsing, scheme validation, and SSRF protection
+    pub async fn forward_request_to_url_raw(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        api_key: Option<&str>,
+        endpoint_style: EndpointStyle,
+    ) -> anyhow::Result<reqwest::Response> {
+        let parsed_url = Url::parse(url)?;
+
+        if !matches!(parsed_url.scheme(), "https" | "http") {
+            return Err(anyhow::anyhow!(
+                "Invalid URL scheme. Only http and https are allowed."
+            ));
+        }
+
+        if let Some(host) = parsed_url.host_str() {
+            if is_metadata_endpoint(host) {
+                return Err(anyhow::anyhow!(
+                    "Access to metadata endpoint '{}' is blocked (SSRF protection)",
+                    host
+                ));
+            }
+
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                if is_internal_ip_strict(&ip) {
+                    return Err(anyhow::anyhow!(
+                        "Access to internal IP '{}' is blocked (SSRF protection). \
+                         Use Tailscale (100.64.0.0/10) or public IPs for providers.",
+                        ip
+                    ));
+                }
+            }
+        }
+
+        debug!("Forwarding request to custom URL (raw): {}", url);
+
+        let mut request = self
+            .client
+            .post(url)
+            .header("Content-Type", "application/json");
+
+        if let Some(key) = api_key {
+            request = add_auth_header(request, key, endpoint_style);
+        }
+
+        let response = request.body(body).send().await?;
+
+        Ok(response)
+    }
+
+    pub async fn forward_request_stream_to_url(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        api_key: Option<&str>,
+        endpoint_style: EndpointStyle,
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>>> {
+        let parsed_url = Url::parse(url)?;
+
+        if !matches!(parsed_url.scheme(), "https" | "http") {
+            return Err(anyhow::anyhow!(
+                "Invalid URL scheme. Only http and https are allowed."
+            ));
+        }
+
+        if let Some(host) = parsed_url.host_str() {
+            if is_metadata_endpoint(host) {
+                return Err(anyhow::anyhow!(
+                    "Access to metadata endpoint '{}' is blocked (SSRF protection)",
+                    host
+                ));
+            }
+
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                if is_internal_ip_strict(&ip) {
+                    return Err(anyhow::anyhow!(
+                        "Access to internal IP '{}' is blocked (SSRF protection). \
+                         Use Tailscale (100.64.0.0/10) or public IPs for providers.",
+                        ip
+                    ));
+                }
+            }
+        }
+
+        debug!("Forwarding streaming request to custom URL: {}", url);
+
+        let mut request = self
+            .client
+            .post(url)
+            .header("Content-Type", "application/json");
+
+        if let Some(key) = api_key {
+            request = add_auth_header(request, key, endpoint_style);
+        }
+
+        let request_timeout = self.request_timeout;
+        let response = tokio::time::timeout(request_timeout, request.body(body).send())
+            .await
+            .map_err(|_| anyhow::anyhow!("Streaming request to {} timed out", url))??;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            error!(
+                "Upstream streaming request to {} failed with status: {} body: {}",
+                url, status, body
+            );
+            return Err(anyhow::anyhow!("Service temporarily unavailable"));
+        }
+
+        info!(
+            "Streaming request to {} succeeded with status: {}",
+            url,
+            response.status()
+        );
+
+        let total_bytes = AtomicUsize::new(0);
+        let max_size = self.max_streaming_size_bytes;
+
+        let byte_stream = response.bytes_stream().map(move |chunk_result| {
+            chunk_result
+                .map_err(|e| anyhow::anyhow!("Stream error: {}", e))
+                .and_then(|bytes| {
+                    let chunk_size = bytes.len();
+                    loop {
+                        let current = total_bytes.load(Ordering::SeqCst);
+                        if current + chunk_size > max_size {
+                            return Err(anyhow::anyhow!(
+                                "Streaming response size limit exceeded (max {} MB, current {})",
+                                max_size / 1024 / 1024,
+                                current / 1024 / 1024
+                            ));
+                        }
+                        match total_bytes.compare_exchange(
+                            current,
+                            current + chunk_size,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        ) {
+                            Ok(_) => break,
+                            Err(_) => continue,
+                        }
+                    }
+
+                    std::str::from_utf8(&bytes)
+                        .map(|s| s.to_string())
+                        .map_err(|e| anyhow::anyhow!("UTF-8 error: {}", e))
+                })
+        });
+
+        let stream: Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>> =
+            Box::pin(byte_stream);
+        Ok(stream)
+    }
+
     fn validate_endpoint(&self, endpoint: &str) -> anyhow::Result<url::Url> {
-        // Validate endpoint is in whitelist (using static list, no allocation)
         if !is_allowed_endpoint(endpoint) {
             error!("Blocked request to disallowed endpoint: {}", endpoint);
             return Err(anyhow::anyhow!(
@@ -338,61 +508,106 @@ impl ProxyClient {
     }
 }
 
-/// Core internal IP check shared between both variants
-/// Returns true if the IP is private, loopback, link-local, or (if block_cgn) CGN range
-fn is_internal_ip_impl(ip: &IpAddr, block_cgn: bool) -> bool {
+fn add_auth_header(
+    mut request: reqwest::RequestBuilder,
+    key: &str,
+    endpoint_style: EndpointStyle,
+) -> reqwest::RequestBuilder {
+    match endpoint_style {
+        EndpointStyle::Anthropic => {
+            request = request.header("x-api-key", key);
+        }
+        _ => {
+            request = request.header("authorization", format!("Bearer {}", key));
+        }
+    }
+    request
+}
+
+/// Check if an IP address is a cloud metadata IP
+fn is_metadata_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            let mut blocked = v4.is_private() || v4.is_loopback() || v4.is_link_local();
-            if block_cgn {
-                // Block shared/carrier-grade NAT (100.64.0.0/10) - used by some networks
-                blocked |= v4.octets()[0] == 100 && (64..=127).contains(&v4.octets()[1]);
-            }
-            blocked
+            let octets = v4.octets();
+            // AWS/GCP/Azure metadata: 169.254.169.254
+            octets == [169, 254, 169, 254]
+            // Alibaba Cloud metadata: 100.100.100.200
+            || octets == [100, 100, 100, 200]
         }
         IpAddr::V6(v6) => {
-            // Check for IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
-            // These can encode internal IPv4 addresses and bypass checks
+            // Check for IPv4-mapped metadata addresses
             if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_internal_ip_impl(&IpAddr::V4(v4), block_cgn);
+                return is_metadata_ip(&IpAddr::V4(v4));
             }
-
-            // Block loopback (::1)
-            v6.is_loopback()
-            // Block unique local addresses (fc00::/7)
-            || v6.is_unique_local()
-            // Block link-local (fe80::/10)
-            || matches!(v6.octets()[0], 0xfe) && (v6.octets()[1] & 0xc0) == 0x80
-            // Block multicast (ff00::/8)
-            || v6.is_multicast()
+            false
         }
     }
 }
 
-/// Check if an IP address is internal/private (blocks CGN range)
-fn is_internal_ip(host: &str) -> bool {
-    host.parse::<IpAddr>()
-        .map(|ip| is_internal_ip_impl(&ip, true))
-        .unwrap_or(false)
-}
+/// Resolve hostname and validate all resolved IPs against SSRF protection
+/// This prevents DNS rebinding attacks where DNS changes after validation
+async fn validate_resolved_ips(host: &str, port: u16) -> anyhow::Result<()> {
+    // Skip DNS resolution for IP addresses (already validated)
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
 
-/// Strict internal IP check for provider URL validation (SSRF defense-in-depth)
-/// Unlike is_internal_ip(), this does NOT block CGN (100.64.0.0/10) because
-/// Tailscale deployments legitimately use this range
-fn is_internal_ip_strict(ip: &IpAddr) -> bool {
-    is_internal_ip_impl(ip, false)
-}
+    // Resolve the hostname
+    let addr_str = format!("{}:{}", host, port);
+    let addrs_result = net::lookup_host(&addr_str).await;
 
-/// Check if a host is a cloud metadata endpoint (by hostname patterns)
-fn is_metadata_endpoint(host: &str) -> bool {
-    // Exact match for IP-based metadata endpoints
-    host == "169.254.169.254"
-        || host == "[::ffff:169.254.169.254]"
-        // Alibaba Cloud metadata
-        || host == "100.100.100.200"
-        // Hostname-based metadata endpoints (GCP, Azure)
-        || host == "metadata.google.internal"
-        || host == "metadata.azure.com"
+    match addrs_result {
+        Ok(addrs_iterator) => {
+            let addrs: Vec<_> = addrs_iterator.collect();
+            let addr_count = addrs.len();
+
+            if addrs.is_empty() {
+                warn!("DNS resolution returned no addresses for: {}", host);
+                return Err(anyhow::anyhow!("DNS resolution failed for host"));
+            }
+
+            for addr in addrs {
+                let ip = addr.ip();
+                if is_internal_ip_strict(&ip) {
+                    warn!(
+                        "DNS rebinding blocked: {} resolved to internal IP {}",
+                        host, ip
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Access to internal IP '{}' (resolved from '{}') is blocked (SSRF protection)",
+                        ip, host
+                    ));
+                }
+
+                // Check for metadata IP
+                if is_metadata_ip(&ip) {
+                    warn!(
+                        "DNS rebinding blocked: {} resolved to metadata IP {}",
+                        host, ip
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Access to metadata IP '{}' (resolved from '{}') is blocked",
+                        ip,
+                        host
+                    ));
+                }
+            }
+
+            debug!(
+                "DNS resolution validated for {}: {} address(es)",
+                host, addr_count
+            );
+            Ok(())
+        }
+        Err(e) => {
+            // DNS resolution failure - log but don't block (let the request proceed and fail naturally)
+            debug!(
+                "DNS resolution failed for {}: {} (will fail at connection time)",
+                host, e
+            );
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

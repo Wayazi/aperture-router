@@ -22,6 +22,65 @@ use crate::config::Config;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+// Import shared constants and functions from parent module
+use super::{is_running_elevated, SYSTEM_CONFIG_PATH};
+
+/// Fix file ownership when saving to system path as root
+/// When running under sudo, the file is created as root:root but the
+/// aperture-router service runs as aperture-router user, so it can't read the config.
+/// This function chowns the file to the aperture-router user using native syscalls.
+#[cfg(unix)]
+fn fix_system_config_ownership(path: &str) -> anyhow::Result<()> {
+    use nix::unistd::{chown, Group, User};
+
+    // Only fix ownership if:
+    // 1. We're running elevated (sudo/root)
+    // 2. The path is the system config path
+    // 3. The aperture-router user exists
+    if !is_running_elevated() || path != SYSTEM_CONFIG_PATH {
+        return Ok(());
+    }
+
+    // Look up the aperture-router user and group using native syscalls
+    let user = match User::from_name("aperture-router")? {
+        Some(u) => u,
+        None => {
+            tracing::debug!("aperture-router user not found, skipping ownership fix");
+            return Ok(());
+        }
+    };
+
+    let group = match Group::from_name("aperture-router")? {
+        Some(g) => g,
+        None => {
+            tracing::debug!("aperture-router group not found, skipping ownership fix");
+            return Ok(());
+        }
+    };
+
+    // Use native chown syscall - no PATH search, no shell execution
+    match chown(std::path::Path::new(path), Some(user.uid), Some(group.gid)) {
+        Ok(()) => {
+            tracing::info!("Fixed ownership for system config: {}", path);
+        }
+        Err(e) => {
+            tracing::warn!("Could not fix ownership for {}: {}", path, e);
+            eprintln!(
+                "Warning: Could not change ownership of {}. The service may not be able to read it.",
+                path
+            );
+            eprintln!("Run: sudo chown aperture-router:aperture-router {}", path);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn fix_system_config_ownership(_path: &str) -> anyhow::Result<()> {
+    Ok(())
+}
+
 /// Run the interactive configuration wizard
 #[cfg(feature = "wizard")]
 pub async fn run_wizard(
@@ -35,6 +94,15 @@ pub async fn run_wizard(
     // Save config
     let save_path = output_path.as_deref().unwrap_or(config_path);
     result.config.save(save_path)?;
+
+    // Fix ownership if saving to system path
+    fix_system_config_ownership(save_path)?;
+
+    // Print helpful message about system config
+    if save_path == SYSTEM_CONFIG_PATH {
+        println!("✓ Config saved to {} (system service)", save_path);
+        println!("  Restart service: sudo systemctl restart aperture-router");
+    }
 
     // Save OpenCode config if generated - MERGE with existing
     if let Some(opencode) = result.opencode_config {
@@ -341,9 +409,11 @@ pub fn generate_config(
     if generate_key {
         let api_key = generate_api_key();
         config.security.api_keys = vec![api_key.clone()];
-        eprintln!("🔑 Generated API key: {}", api_key);
-        eprintln!("   Save this key securely - it won't be shown again!");
-        eprintln!();
+        // Print to stdout (not stderr which may be captured by logging systems)
+        println!("WARNING: The following API key will be displayed. Ensure no one is looking at your screen.");
+        println!("🔑 Generated API key: {}", api_key);
+        println!("   Save this key securely - it won't be shown again!");
+        println!();
     }
 
     // Get API key from environment if set
@@ -362,6 +432,9 @@ pub fn generate_config(
     let save_path = output_path.as_deref().unwrap_or(config_path);
     config.save(save_path)?;
 
+    // Fix ownership if saving to system path
+    fix_system_config_ownership(save_path)?;
+
     println!("✓ Config generated at {}", save_path);
     println!();
     println!("Aperture URL: {}", aperture_url);
@@ -375,8 +448,15 @@ pub fn generate_config(
     );
     println!("Auth Required: {}", config.security.require_auth_in_prod);
     println!();
-    println!("To start the server:");
-    println!("  aperture-router --config {}", save_path);
+
+    // Print helpful message based on config location
+    if save_path == SYSTEM_CONFIG_PATH {
+        println!("System service config created. To start:");
+        println!("  sudo systemctl enable --now aperture-router");
+    } else {
+        println!("To start the server:");
+        println!("  aperture-router --config {}", save_path);
+    }
 
     Ok(())
 }

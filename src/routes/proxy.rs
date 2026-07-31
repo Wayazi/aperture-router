@@ -1,25 +1,20 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2026 aperture-router contributors
-
 use axum::{body::Body, extract::State, Json};
 use http::{response::Response, StatusCode};
 use reqwest::Response as ReqwestResponse;
 use serde::Serialize;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::config::Provider;
 use crate::proxy::client::ProxyClient;
 use crate::ProviderRegistry;
 
-/// Maximum response size (10MB) to prevent DoS
 const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
+const MAX_FAILOVER_ATTEMPTS: usize = 3;
 
-/// Trait for requests that have a model field
 pub trait HasModel {
     fn model(&self) -> &str;
 }
 
-/// Build a JSON error response
 fn json_error(status: StatusCode, message: &str) -> Response<Body> {
     Response::builder()
         .status(status)
@@ -30,7 +25,6 @@ fn json_error(status: StatusCode, message: &str) -> Response<Body> {
         .expect("failed to build error response")
 }
 
-/// Build a JSON response with the given status and body string
 fn json_response(status: StatusCode, body: impl Into<String>) -> Response<Body> {
     Response::builder()
         .status(status)
@@ -39,7 +33,6 @@ fn json_response(status: StatusCode, body: impl Into<String>) -> Response<Body> 
         .expect("failed to build json response")
 }
 
-/// Process a successful upstream response: read body, check size, return
 async fn process_upstream_response(response: ReqwestResponse) -> Response<Body> {
     let status = response.status();
 
@@ -59,17 +52,25 @@ async fn process_upstream_response(response: ReqwestResponse) -> Response<Body> 
     json_response(status, response_body)
 }
 
-/// Build endpoint URL based on provider configuration
 fn build_provider_url(provider: &Provider, default_endpoint: &str) -> String {
     ProviderRegistry::build_endpoint_url(provider, default_endpoint)
 }
 
-/// Get the API key for a provider
-fn get_provider_api_key(provider: &Provider, default_key: Option<&String>) -> Option<String> {
-    provider.api_key.clone().or_else(|| default_key.cloned())
+fn get_provider_api_key(
+    provider: &Provider,
+    default_key: Option<&String>,
+    gateway_url: &str,
+) -> Option<String> {
+    if provider.api_key.is_some() {
+        return provider.api_key.clone();
+    }
+    if provider.base_url.trim_end_matches('/') == gateway_url.trim_end_matches('/') {
+        default_key.cloned()
+    } else {
+        None
+    }
 }
 
-/// Serialize a request, returning the body bytes or an error response
 #[allow(clippy::result_large_err)]
 fn serialize_request<T: Serialize>(request: &T) -> Result<Vec<u8>, Response<Body>> {
     serde_json::to_vec(request).map_err(|e| {
@@ -78,7 +79,6 @@ fn serialize_request<T: Serialize>(request: &T) -> Result<Vec<u8>, Response<Body
     })
 }
 
-/// Proxy request to default Aperture gateway (used when multi-provider is disabled)
 async fn proxy_to_default_gateway<T>(
     proxy_client: ProxyClient,
     request: T,
@@ -107,15 +107,52 @@ where
     }
 }
 
-/// Generic proxy handler for JSON requests with multi-provider support
-/// Now accepts Option<Provider> directly since lookup is async
+async fn try_provider(
+    proxy_client: &ProxyClient,
+    provider: &Provider,
+    body: &[u8],
+    default_endpoint: &str,
+) -> Result<Response<Body>, StatusCode> {
+    let url = build_provider_url(provider, default_endpoint);
+    debug!("Built URL: {}", url);
+
+    let api_key = get_provider_api_key(provider, proxy_client.api_key(), proxy_client.base_url());
+
+    match proxy_client
+        .forward_request_to_url_raw(
+            &url,
+            body.to_vec(),
+            api_key.as_deref(),
+            provider.endpoint_style,
+        )
+        .await
+    {
+        Ok(response) => {
+            let status = response.status();
+            if status.is_server_error() {
+                warn!(
+                    "Provider '{}' returned {}, will try next",
+                    provider.name, status
+                );
+                Err(status)
+            } else {
+                Ok(process_upstream_response(response).await)
+            }
+        }
+        Err(e) => {
+            warn!("Provider '{}' connection error: {}", provider.name, e);
+            Err(StatusCode::BAD_GATEWAY)
+        }
+    }
+}
+
 pub async fn proxy_handler_multi<T>(
     proxy_client: ProxyClient,
-    provider: Option<Provider>,
+    providers: Vec<Provider>,
     request: T,
     default_endpoint: &str,
     multi_provider_enabled: bool,
-    _registry: &ProviderRegistry, // Keep for potential future use
+    _registry: &ProviderRegistry,
 ) -> Response<Body>
 where
     T: HasModel + Serialize,
@@ -123,53 +160,78 @@ where
     let model = request.model();
     debug!("Proxying request for model: {}", model);
 
-    // If multi-provider is disabled, skip provider lookup and use default gateway
     if !multi_provider_enabled {
         debug!("Multi-provider disabled, using default Aperture gateway");
         return proxy_to_default_gateway(proxy_client, request, default_endpoint).await;
     }
 
-    match provider {
-        Some(provider) => {
-            info!(
-                "Routing model '{}' to provider '{}' ({})",
-                model, provider.name, provider.base_url
-            );
+    if providers.is_empty() {
+        debug!(
+            "No provider found for model '{}', using default gateway",
+            model
+        );
+        return proxy_to_default_gateway(proxy_client, request, default_endpoint).await;
+    }
 
-            let url = build_provider_url(&provider, default_endpoint);
-            debug!("Built URL: {}", url);
+    let body = match serialize_request(&request) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
 
-            let api_key = get_provider_api_key(&provider, proxy_client.api_key());
-            let body = match serialize_request(&request) {
-                Ok(b) => b,
-                Err(r) => return r,
-            };
+    if providers.len() == 1 {
+        let provider = &providers[0];
+        info!(
+            "Routing model '{}' to provider '{}' ({})",
+            model, provider.name, provider.base_url
+        );
+        return match try_provider(&proxy_client, provider, &body, default_endpoint).await {
+            Ok(response) => response,
+            Err(_) => json_error(StatusCode::BAD_GATEWAY, "Failed to forward request"),
+        };
+    }
 
-            match proxy_client
-                .forward_request_to_url(&url, body, api_key.as_deref())
-                .await
-            {
-                Ok(response) => process_upstream_response(response).await,
-                Err(e) => {
-                    error!("Proxy error for provider '{}': {}", provider.name, e);
-                    json_error(
-                        StatusCode::BAD_GATEWAY,
-                        &format!("Failed to forward request to provider '{}'", provider.name),
-                    )
+    info!(
+        "Routing model '{}' across {} providers (failover enabled)",
+        model,
+        providers.len()
+    );
+
+    let mut last_error = StatusCode::BAD_GATEWAY;
+    for (i, provider) in providers.iter().take(MAX_FAILOVER_ATTEMPTS).enumerate() {
+        debug!(
+            "Trying provider {}/{}: '{}' ({})",
+            i + 1,
+            MAX_FAILOVER_ATTEMPTS,
+            provider.name,
+            provider.base_url
+        );
+
+        match try_provider(&proxy_client, provider, &body, default_endpoint).await {
+            Ok(response) => {
+                if i > 0 {
+                    info!(
+                        "Succeeded on provider '{}' (attempt {}/{})",
+                        provider.name,
+                        i + 1,
+                        MAX_FAILOVER_ATTEMPTS
+                    );
                 }
+                return response;
+            }
+            Err(status) => {
+                last_error = status;
             }
         }
-        None => {
-            debug!(
-                "No provider found for model '{}', using default gateway",
-                model
-            );
-            proxy_to_default_gateway(proxy_client, request, default_endpoint).await
-        }
     }
+
+    error!(
+        "All {} providers failed for model '{}'",
+        providers.len(),
+        model
+    );
+    json_error(last_error, "All providers failed")
 }
 
-/// Generic proxy handler for JSON requests (legacy, single provider)
 pub async fn proxy_handler<T>(
     State(proxy_client): State<ProxyClient>,
     Json(request): Json<T>,

@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod conversion;
 pub mod openai;
 pub mod validation;
 
