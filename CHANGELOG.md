@@ -7,8 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-31
+
 ### Fixed
 - **Configurable `max_messages`** - `MAX_MESSAGES` was hardcoded to 1000 in all three route handlers (`/v1/chat/completions`, `/v1/messages`, `/v1/proxy`), causing `400 too_many_messages` errors for long agentic sessions that never cooled off. Now configurable via `security.max_messages` in config (default 10000).
+- **RateLimiter config wired** - `RateLimiter` now uses `config.rate_limit.burst_size` and `requests_per_second` instead of hardcoded 100/60s.
+- **`validate_max_tokens` no longer dead code** - Wired into all 3 route handlers; limit constant moved to `validation.rs`.
+- **Discovery uses config-aware HTTP client** - `ModelDiscovery` now builds its own `reqwest::Client` from `HttpConfig` instead of using `SHARED_CLIENT` with hardcoded timeouts.
+- **Streaming endpoint returns JSON error bodies** - Replaced bare `StatusCode` returns with structured JSON error responses.
+- **Auth header on discovery** - `x-api-key` header now sent to Aperture `/v1/models` when `aperture.api_key` is configured.
+- **Discovery merges models** - `update_from_discovery` now merges discovered models with existing configured models instead of replacing; manually-configured models preserved in both `provider.models` and `model_to_provider` routing map.
+- **Conversion: tool_result images preserved** - Structured/image content in tool results is now passed through instead of flattened to text.
+- **Conversion: stop_sequence propagated** - Now reads `usage.stop_sequence` from upstream instead of hardcoding null.
+- **Conversion: output_tokens uses upstream value** - Streaming converter reads `completion_tokens` when available instead of using a per-delta heuristic.
+- **Conversion: metadata.user_id mapped** - Mapped to OpenAI's `user` field instead of being stripped.
+- **Conversion: cache_control stripped** - Removed from both top-level and individual content blocks to prevent upstream rejection.
+- **Security: quinn-proto updated** - 0.11.14 → 0.11.16 (CVE: remote memory exhaustion).
+
+### Added
+- **Anthropic-direct SSE streaming** - When `stream:true` and an Anthropic-style provider exists, requests now use true SSE passthrough instead of buffering the full response.
+- **Discovery retry with backoff** - 3 attempts with exponential backoff on server errors and connection failures.
+
+### Changed
+- **Admin keys valid for regular endpoints** - `is_enabled()` returns true when only admin keys are configured; `validate_api_key()` checks both regular and admin keys.
+- **Model alias resolution** - `resolve_model_alias()` in all 3 routes before validation.
+
+### Performance
+- **RSS reduced 35%** - From 6.4MB to 4.2MB by removing `SHARED_CLIENT`/`once_cell` and using `Arc<Config>`.
+- **5 dead dependencies removed** - `config`, `once_cell`, `tokio-stream`, `tokio-test`, `mockall`.
 
 ## [0.3.0] - 2026-06-12
 
