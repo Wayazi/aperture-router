@@ -38,7 +38,6 @@ toml = "0.8"
 url = "2.5"
 
 # Async utilities
-tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
 
@@ -47,7 +46,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Configuration
-config = "0.15"
 dotenvy = "0.15"
 
 # Error handling
@@ -69,9 +67,6 @@ dirs = "5"
 # UUID for request tracking - no wasm
 uuid = { version = "1", features = ["v4"], default-features = false }
 
-# Lazy static initialization for shared client
-once_cell = "1.19"
-
 # Unix-specific functionality (user/group lookup for secure file operations)
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["user", "fs"] }
@@ -91,9 +86,7 @@ opt-level = 3
 codegen-units = 1
 
 [dev-dependencies]
-tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 wiremock = "0.6"
-mockall = "0.13"
 tempfile = "3"
