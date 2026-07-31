@@ -90,7 +90,7 @@ impl ProviderRegistry {
                     name: provider_id.clone(),
                     base_url: aperture_url.to_string(),
                     api_key: None,
-                    endpoint_style: EndpointStyle::Anthropic,
+                    endpoint_style: EndpointStyle::OpenaiDirect,
                     models: model_ids.clone(),
                     enabled: true,
                 };

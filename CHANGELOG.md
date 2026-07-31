@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Configurable `max_messages`** - `MAX_MESSAGES` was hardcoded to 1000 in all three route handlers (`/v1/chat/completions`, `/v1/messages`, `/v1/proxy`), causing `400 too_many_messages` errors for long agentic sessions that never cooled off. Now configurable via `security.max_messages` in config (default 10000).
+
 ## [0.3.0] - 2026-06-12
 
 ### Added
