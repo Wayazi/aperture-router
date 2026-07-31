@@ -266,6 +266,30 @@ mod config_tests {
     }
 
     #[test]
+    fn test_config_default_max_messages() {
+        let config = Config::default();
+        assert_eq!(config.security.max_messages, 10000);
+    }
+
+    #[test]
+    fn test_config_validation_max_messages_zero() {
+        let mut config = Config::default();
+        config.security.max_messages = 0;
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Max messages cannot be 0"));
+    }
+
+    #[test]
+    fn test_config_validation_max_messages_custom() {
+        let mut config = Config::default();
+        config.security.api_keys = vec!["abcdefghijklmnopqrstuvwxyz123456".to_string()];
+        config.security.max_messages = 50000;
+        let result = config.validate();
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_config_load_from_file() {
         let config_content = r#"
             host = "192.168.1.1"
@@ -334,6 +358,76 @@ mod config_tests {
         assert_eq!(
             config.model_aliases.get("gpt-4"),
             Some(&"gpt-4-turbo-preview".to_string())
+        );
+    }
+
+    // ============================================
+    // Model alias resolution tests (Task 1.3)
+    // ============================================
+
+    #[test]
+    fn test_resolve_model_alias_found() {
+        let mut aliases = HashMap::new();
+        aliases.insert("gpt-4".to_string(), "gpt-4-turbo-preview".to_string());
+        aliases.insert("claude-3".to_string(), "claude-3-opus-20240229".to_string());
+
+        let config = Config {
+            model_aliases: aliases,
+            ..Default::default()
+        };
+
+        // Should resolve aliases
+        assert_eq!(config.resolve_model_alias("gpt-4"), "gpt-4-turbo-preview");
+        assert_eq!(
+            config.resolve_model_alias("claude-3"),
+            "claude-3-opus-20240229"
+        );
+    }
+
+    #[test]
+    fn test_resolve_model_alias_not_found() {
+        let mut aliases = HashMap::new();
+        aliases.insert("gpt-4".to_string(), "gpt-4-turbo-preview".to_string());
+
+        let config = Config {
+            model_aliases: aliases,
+            ..Default::default()
+        };
+
+        // Should return original model name if no alias exists
+        assert_eq!(config.resolve_model_alias("gpt-4-turbo"), "gpt-4-turbo");
+        assert_eq!(config.resolve_model_alias("unknown-model"), "unknown-model");
+    }
+
+    #[test]
+    fn test_resolve_model_alias_empty_config() {
+        let config = Config::default();
+
+        // Should return original model name when no aliases configured
+        assert_eq!(config.resolve_model_alias("gpt-4"), "gpt-4");
+        assert_eq!(config.resolve_model_alias("claude-3-opus"), "claude-3-opus");
+    }
+
+    #[test]
+    fn test_resolve_model_alias_chain() {
+        // Test that aliases don't chain (one level only)
+        let mut aliases = HashMap::new();
+        aliases.insert("gpt-4".to_string(), "gpt-4-turbo".to_string());
+        // Note: "gpt-4-turbo" -> "gpt-4-turbo-preview" would be a second level
+        // We should NOT resolve chains to avoid infinite loops
+        aliases.insert("gpt-4-turbo".to_string(), "gpt-4-turbo-preview".to_string());
+
+        let config = Config {
+            model_aliases: aliases,
+            ..Default::default()
+        };
+
+        // Should only resolve one level
+        assert_eq!(config.resolve_model_alias("gpt-4"), "gpt-4-turbo");
+        // But can resolve another alias directly
+        assert_eq!(
+            config.resolve_model_alias("gpt-4-turbo"),
+            "gpt-4-turbo-preview"
         );
     }
 
