@@ -216,6 +216,9 @@ pub struct RouterHandles {
 pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> RouterHandles {
     info!("Creating router with authentication and CORS layers");
 
+    // Wrap config in Arc immediately to avoid cloning the full struct
+    let config = Arc::new(config);
+
     // Create provider registry with Aperture URL for auto-discovery
     let provider_registry = Arc::new(ProviderRegistry::with_aperture_url(
         config.providers.clone(),
@@ -262,7 +265,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> RouterHa
     )));
 
     // Create shared config and auth state (single instance each)
-    let shared_config = Arc::new(config.clone());
+    let shared_config = Arc::clone(&config);
     let shared_auth_state = Arc::new(auth_state.clone());
 
     // Create a single AppState wrapped in Arc (reduces clones)
