@@ -79,8 +79,10 @@ impl AuthState {
     }
 
     /// Check if authentication is enabled
+    /// Returns true if either regular API keys OR admin API keys are configured
+    /// This ensures auth is required even if only admin keys are set
     pub fn is_enabled(&self) -> bool {
-        !self.api_keys.is_empty()
+        !self.api_keys.is_empty() || !self.admin_api_keys.is_empty()
     }
 
     /// Check if admin authentication is enabled
@@ -161,7 +163,7 @@ impl AuthState {
                 let now = Instant::now();
 
                 // Clean up old attempts
-                for (_, attempt_times) in attempts.iter_mut() {
+                for attempt_times in attempts.values_mut() {
                     attempt_times
                         .retain(|timestamp| now.duration_since(*timestamp) < window_duration);
                 }
@@ -173,11 +175,14 @@ impl AuthState {
     }
 
     /// Validate API key with timing-safe comparison
-    /// Compares against ALL keys to prevent timing attacks
+    /// Compares against ALL keys (both regular and admin) to prevent timing attacks
+    /// Admin keys can access regular endpoints, but regular keys cannot access admin endpoints
     /// Uses bitwise OR to ensure no short-circuit evaluation
     pub fn validate_api_key(&self, key: &str) -> bool {
         let key_bytes = key.as_bytes();
         let mut found = 0u8; // Use integer for constant-time OR
+
+        // Check regular API keys first
         for valid_key in &self.api_keys {
             // Always perform the comparison (no short-circuit with bitwise OR)
             let matches: u8 = if bool::from(valid_key.as_bytes().ct_eq(key_bytes)) {
@@ -187,6 +192,18 @@ impl AuthState {
             };
             found |= matches; // Bitwise OR is constant-time
         }
+
+        // Also check admin keys (admin keys work for regular endpoints too)
+        // This ensures auth works when only admin_api_keys is configured
+        for valid_key in &self.admin_api_keys {
+            let matches: u8 = if bool::from(valid_key.as_bytes().ct_eq(key_bytes)) {
+                1
+            } else {
+                0
+            };
+            found |= matches;
+        }
+
         found == 1
     }
 

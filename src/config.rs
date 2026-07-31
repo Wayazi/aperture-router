@@ -163,6 +163,10 @@ pub struct SecurityConfig {
     /// Maximum streaming response size in bytes
     #[serde(default = "default_max_streaming_size")]
     pub max_streaming_size_bytes: usize,
+
+    /// Maximum number of messages per request (prevents DoS via huge conversations)
+    #[serde(default = "default_max_messages")]
+    pub max_messages: usize,
 }
 
 fn default_max_body_size() -> usize {
@@ -191,6 +195,10 @@ fn default_max_json_depth() -> usize {
 
 fn default_max_streaming_size() -> usize {
     100 * 1024 * 1024 // 100MB
+}
+
+fn default_max_messages() -> usize {
+    10000
 }
 
 /// Endpoint style for different API providers
@@ -341,6 +349,7 @@ impl Default for SecurityConfig {
             require_auth_in_prod: default_require_auth(),
             max_json_depth: default_max_json_depth(),
             max_streaming_size_bytes: default_max_streaming_size(),
+            max_messages: default_max_messages(),
         }
     }
 }
@@ -401,6 +410,15 @@ impl Config {
         let addr = format!("{}:{}", self.host, self.port);
         addr.parse()
             .map_err(|e| anyhow::anyhow!("Invalid server address {}: {}", addr, e))
+    }
+
+    /// Resolve a model alias to its actual model name
+    /// If no alias exists, returns the original model name unchanged
+    pub fn resolve_model_alias(&self, model: &str) -> String {
+        self.model_aliases
+            .get(model)
+            .cloned()
+            .unwrap_or_else(|| model.to_string())
     }
 
     /// Configuration validation
@@ -552,6 +570,11 @@ impl Config {
         }
         if self.security.max_streaming_size_bytes > 1024 * 1024 * 1024 {
             return Err("Max streaming size cannot exceed 1GB".to_string());
+        }
+
+        // Validate max messages limit
+        if self.security.max_messages == 0 {
+            return Err("Max messages cannot be 0".to_string());
         }
 
         // Production safety check - only enforce in release builds (production)
