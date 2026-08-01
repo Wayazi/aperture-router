@@ -158,15 +158,11 @@ Download from [Releases](https://github.com/Wayazi/aperture-router/releases)
 Create a `config.toml`:
 
 ```toml
-[server]
 host = "127.0.0.1"
-port = 8080
+port = 8765
 
 [aperture]
 base_url = "http://100.100.100.100"  # Your Aperture gateway
-
-[logging]
-level = "info"
 
 [security]
 api_keys = ["your-api-key-here"]  # Optional: Enable authentication
@@ -176,7 +172,7 @@ Or use environment variables:
 
 ```bash
 export APERTURE_BASE_URL=http://100.100.100.100
-export APERTURE_ROUTER_PORT=8080
+export APERTURE_PORT=8080
 export APERTURE_API_KEY=your-api-key-here
 ```
 
@@ -212,7 +208,8 @@ aperture-router --debug
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-[Unreleased]: https://github.com/Wayazi/aperture-router/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Wayazi/aperture-router/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Wayazi/aperture-router/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Wayazi/aperture-router/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Wayazi/aperture-router/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Wayazi/aperture-router/releases/tag/v0.1.0

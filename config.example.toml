@@ -91,7 +91,7 @@ name = "zai-credit"
 base_url = "https://api.z.ai/api/paas/v4"
 endpoint_style = "openai_direct"
 models = ["glm-5", "glm-4.7", "glm-4.7-flash"]
-# Use environment variable for API key: ${ZAI_API_KEY}
+# API key for this provider (set directly — no env var interpolation)
 api_key = "your-zai-api-key"
 
 [[providers]]
@@ -119,6 +119,7 @@ models = ["GLM-5", "glm-4.7"]
 #
 # openai_direct: Direct endpoint without /v1 prefix (Z.ai v4 style)
 #               URL = base_url + /chat/completions
+#               URL = base_url + /messages
 #
 # anthropic:     Anthropic messages endpoint only
 #               URL = base_url + /v1/messages
