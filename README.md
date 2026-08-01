@@ -123,8 +123,9 @@ aperture-router config fetch --url URL     # List available models
 aperture-router config list                # Show current config
 aperture-router config validate            # Validate config
 
-# Export for OpenCode
+# Export for OpenCode or OpenClaw
 aperture-router config export --opencode
+aperture-router config export --openclaw
 ```
 
 ## Environment Variables
@@ -132,6 +133,8 @@ aperture-router config export --opencode
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `APERTURE_BASE_URL` | Aperture gateway URL (required if no config) | `http://100.100.100.100:8080` |
+| `APERTURE_HOST` | Listen address | `0.0.0.0` |
+| `APERTURE_PORT` | Listen port | `8080` |
 | `APERTURE_API_KEY` | API key for authentication | `your-32-char-key-here` |
 | `APERTURE_ALLOW_NO_AUTH` | Disable auth requirement (dev only) | `1` |
 | `RUST_LOG` | Logging level | `debug`, `info` |
@@ -250,9 +253,17 @@ Set the API base URL to `http://127.0.0.1:8765`
 
 ## Documentation
 
-- [INSTALL.md](INSTALL.md) - Detailed installation guide
-- [DEPLOYMENT.md](DEPLOYMENT.md) - Production deployment guide
-- [CHANGELOG.md](CHANGELOG.md) - Version history
+| Section | For |
+|---------|-----|
+| [Tutorials](docs/tutorials) — Step-by-step for beginners | New users |
+| [How-to Guides](docs/how-to) — Achieve a specific goal | Everyone |
+| [Reference](docs/reference) — Commands, configs, API specs | Lookups |
+| [Explanation](docs/explanation) — Why things work this way | Deep understanding |
+| [Troubleshooting](docs/troubleshooting.md) — Fix problems | Everyone |
+| [INSTALL.md](INSTALL.md) - Detailed installation guide | Setup |
+| [DEPLOYMENT.md](DEPLOYMENT.md) - Production deployment guide | DevOps |
+| [CHANGELOG.md](CHANGELOG.md) - Version history | All |
+| [CONTRIBUTING.md](CONTRIBUTING.md) - How to contribute | Contributors |
 
 ## Development
 
@@ -260,7 +271,7 @@ Set the API base URL to `http://127.0.0.1:8765`
 # Build
 cargo build
 
-# Run tests (154 tests)
+# Run tests (230 tests)
 cargo test
 
 # Run with debug logging
