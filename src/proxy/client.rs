@@ -6,6 +6,7 @@ use reqwest::Client;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::net;
 use tracing::{debug, error, info, warn};
@@ -14,6 +15,76 @@ use url::Url;
 use crate::config::{ApertureConfig, EndpointStyle, HttpConfig};
 use crate::http_client::{create_client_with_timeouts, is_allowed_endpoint};
 use crate::security::{is_internal_ip, is_internal_ip_strict, is_metadata_endpoint};
+
+/// Convert a byte stream into a String stream with UTF-8 buffering.
+/// Multi-byte characters split across TCP chunks are reassembled correctly.
+fn make_utf8_stream(
+    response: reqwest::Response,
+    total_bytes: AtomicUsize,
+    max_size: usize,
+) -> Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>> {
+    let leftover: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+    let byte_stream = response.bytes_stream().map(move |chunk_result| {
+        chunk_result
+            .map_err(|e| anyhow::anyhow!("Stream error: {}", e))
+            .and_then(|bytes| {
+                let chunk_size = bytes.len();
+                loop {
+                    let current = total_bytes.load(Ordering::SeqCst);
+                    if current + chunk_size > max_size {
+                        return Err(anyhow::anyhow!(
+                            "Streaming response size limit exceeded (max {} MB, current {})",
+                            max_size / 1024 / 1024,
+                            current / 1024 / 1024
+                        ));
+                    }
+                    match total_bytes.compare_exchange(
+                        current,
+                        current + chunk_size,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => break,
+                        Err(_) => continue,
+                    }
+                }
+
+                let mut buf = leftover.lock().unwrap();
+                buf.extend_from_slice(&bytes);
+
+                match std::str::from_utf8(&buf) {
+                    Ok(_) => {
+                        let s = String::from_utf8(std::mem::take(&mut *buf)).unwrap_or_default();
+                        Ok(s)
+                    }
+                    Err(e) => {
+                        let safe_len = e.valid_up_to();
+                        if safe_len == 0 {
+                            let needed = e.error_len().unwrap_or(1);
+                            if buf.len() > 4 + needed {
+                                let s = String::from_utf8_lossy(&buf).to_string();
+                                error!("UTF-8 decode failed, lossy fallback: {}", e);
+                                buf.clear();
+                                return Ok(s);
+                            }
+                            Ok(String::new())
+                        } else {
+                            let s = std::str::from_utf8(&buf[..safe_len])
+                                .unwrap_or("")
+                                .to_string();
+                            let remaining = buf[safe_len..].to_vec();
+                            buf.clear();
+                            buf.extend(remaining);
+                            Ok(s)
+                        }
+                    }
+                }
+            })
+    });
+
+    Box::pin(byte_stream)
+}
 
 /// HTTP client for proxying requests to Aperture
 #[derive(Clone)]
@@ -163,50 +234,10 @@ impl ProxyClient {
             response.status()
         );
 
-        // Track cumulative streaming size with AtomicUsize for thread-safety
         let total_bytes = AtomicUsize::new(0);
         let max_size = self.max_streaming_size_bytes;
 
-        // Convert response body chunks to a stream with size tracking
-        let byte_stream = response.bytes_stream().map(move |chunk_result| {
-            chunk_result
-                .map_err(|e| anyhow::anyhow!("Stream error: {}", e))
-                .and_then(|bytes| {
-                    // Use compare_exchange loop to prevent TOCTOU race condition
-                    // This ensures we check the limit BEFORE adding, not after
-                    let chunk_size = bytes.len();
-                    loop {
-                        let current = total_bytes.load(Ordering::SeqCst);
-
-                        // Check if adding this chunk would exceed the limit
-                        if current + chunk_size > max_size {
-                            return Err(anyhow::anyhow!(
-                                "Streaming response size limit exceeded (max {} MB, current {})",
-                                max_size / 1024 / 1024,
-                                current / 1024 / 1024
-                            ));
-                        }
-
-                        // Try to atomically update the counter
-                        match total_bytes.compare_exchange(
-                            current,
-                            current + chunk_size,
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        ) {
-                            Ok(_) => break,     // Successfully updated
-                            Err(_) => continue, // Another thread updated, retry
-                        }
-                    }
-
-                    std::str::from_utf8(&bytes)
-                        .map(|s| s.to_string())
-                        .map_err(|e| anyhow::anyhow!("UTF-8 error: {}", e))
-                })
-        });
-
-        let stream: Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>> =
-            Box::pin(byte_stream);
+        let stream = make_utf8_stream(response, total_bytes, max_size);
         Ok(stream)
     }
 
@@ -423,39 +454,7 @@ impl ProxyClient {
         let total_bytes = AtomicUsize::new(0);
         let max_size = self.max_streaming_size_bytes;
 
-        let byte_stream = response.bytes_stream().map(move |chunk_result| {
-            chunk_result
-                .map_err(|e| anyhow::anyhow!("Stream error: {}", e))
-                .and_then(|bytes| {
-                    let chunk_size = bytes.len();
-                    loop {
-                        let current = total_bytes.load(Ordering::SeqCst);
-                        if current + chunk_size > max_size {
-                            return Err(anyhow::anyhow!(
-                                "Streaming response size limit exceeded (max {} MB, current {})",
-                                max_size / 1024 / 1024,
-                                current / 1024 / 1024
-                            ));
-                        }
-                        match total_bytes.compare_exchange(
-                            current,
-                            current + chunk_size,
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        ) {
-                            Ok(_) => break,
-                            Err(_) => continue,
-                        }
-                    }
-
-                    std::str::from_utf8(&bytes)
-                        .map(|s| s.to_string())
-                        .map_err(|e| anyhow::anyhow!("UTF-8 error: {}", e))
-                })
-        });
-
-        let stream: Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>> =
-            Box::pin(byte_stream);
+        let stream = make_utf8_stream(response, total_bytes, max_size);
         Ok(stream)
     }
 
