@@ -19,16 +19,12 @@ This guide covers production deployment of aperture-router.
 ```toml
 # /etc/aperture-router/config.toml
 
-[server]
 host = "0.0.0.0"  # Listen on all interfaces
 port = 8080
 
 [aperture]
 base_url = "http://100.100.100.100"  # Your Aperture gateway
 model_refresh_interval_secs = 300
-
-[logging]
-level = "info"  # Use "warn" in production for less verbosity
 
 [security]
 # Enable authentication in production
@@ -55,8 +51,8 @@ For sensitive configuration, use environment variables:
 ```bash
 # /etc/sysconfig/aperture-router
 APERTURE_BASE_URL=http://100.100.100.100
-APERTURE_ROUTER_HOST=0.0.0.0
-APERTURE_ROUTER_PORT=8080
+APERTURE_HOST=0.0.0.0
+APERTURE_PORT=8080
 RUST_LOG=info
 APERTURE_API_KEY=your-strong-api-key-here
 ```
@@ -269,10 +265,10 @@ Run multiple instances behind a load balancer:
 
 ```bash
 # Instance 1
-APERTURE_ROUTER_PORT=8080 aperture-router &
+APERTURE_PORT=8080 aperture-router &
 
 # Instance 2
-APERTURE_ROUTER_PORT=8081 aperture-router &
+APERTURE_PORT=8081 aperture-router &
 ```
 
 Configure HAProxy or nginx:
@@ -347,14 +343,6 @@ upstream aperture {
    [http]
    request_timeout_secs = 600
    ```
-
-### Database Lock Errors
-
-If using model caching, ensure proper file permissions:
-
-```bash
-sudo chown -R aperture-router:aperture-router /var/lib/aperture-router
-```
 
 ## Backup and Recovery
 
