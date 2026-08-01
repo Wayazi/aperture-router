@@ -95,8 +95,8 @@ You can set environment variables in `/etc/sysconfig/aperture-router`:
 APERTURE_BASE_URL=http://100.100.100.100
 
 # Set server host/port
-APERTURE_ROUTER_HOST=0.0.0.0
-APERTURE_ROUTER_PORT=8080
+APERTURE_HOST=0.0.0.0
+APERTURE_PORT=8080
 
 # Enable debug logging
 RUST_LOG=debug
