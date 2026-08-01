@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-01
+
+### Fixed
+- **UTF-8 stream buffering** - Multi-byte UTF-8 characters (emojis, international text) split across TCP chunks caused `Stream interrupted` errors. Fixed by buffering partial UTF-8 sequences across chunks using a carry-over buffer in `make_utf8_stream()`.
+
+### Added
+- **Complete documentation** - Diátaxis framework docs structure (21 files): tutorials, how-to guides, reference, explanation, troubleshooting.
+- **AGENTS.md** - Context file for AI agents working on the repo.
+- **CONTRIBUTING.md** - Contribution guide.
+
+### Changed
+- **Docs audit fixes** - Corrected env var names (`APERTURE_HOST`/`APERTURE_PORT` not `APERTURE_ROUTER_*`), removed non-existent `[server]`/`[logging]` config tables, fixed health endpoint response format, fixed `openai_direct` messages URL, fixed `endpoint_style` casing, removed misleading `${ENV_VAR}` interpolation examples.
+
 ## [0.3.1] - 2026-07-31
 
 ### Fixed
@@ -208,7 +221,8 @@ aperture-router --debug
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-[Unreleased]: https://github.com/Wayazi/aperture-router/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Wayazi/aperture-router/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/Wayazi/aperture-router/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Wayazi/aperture-router/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Wayazi/aperture-router/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Wayazi/aperture-router/compare/v0.1.0...v0.2.0
