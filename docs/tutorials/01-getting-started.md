@@ -236,8 +236,9 @@ Aperture models.
 You forgot Step 2. Run `export APERTURE_BASE_URL=...` again.
 
 **"Production mode requires authentication but no API keys configured"**
-Either set `APERTURE_API_KEY` or, for local dev only, disable auth with
-`export APERTURE_ALLOW_NO_AUTH=1`.
+Either set `APERTURE_CLIENT_API_KEYS` (e.g.
+`export APERTURE_CLIENT_API_KEYS=$(openssl rand -hex 24)`) or, for local dev
+only, disable auth with `export APERTURE_ALLOW_NO_AUTH=1`.
 
 **Connection refused to Aperture**
 Make sure Tailscale is running (`tailscale status`) and that you can reach the

@@ -1,37 +1,20 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 aperture-router contributors
 
+mod common;
+
+use common::{add_connect_info, create_test_router};
+
 use axum::{
     body::Body,
-    extract::ConnectInfo,
     http::{Method, Request, StatusCode},
 };
 use http_body_util::BodyExt;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tower::ServiceExt;
 use wiremock::matchers::{method, path};
 use wiremock::{MockServer, ResponseTemplate};
 
-use aperture_router::{
-    config::Config,
-    discovery::models::ModelDiscovery,
-    server::{self, create_router},
-};
-
-fn create_test_router(config: Config, discovery: std::sync::Arc<ModelDiscovery>) -> axum::Router {
-    let server::RouterHandles { router, .. } = create_router(config, discovery);
-    router
-}
-
-/// Add ConnectInfo extension to a request for testing
-/// This simulates what the server does with into_make_service_with_connect_info
-fn add_connect_info<B>(mut request: Request<B>) -> Request<B> {
-    request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-        12345,
-    )));
-    request
-}
+use aperture_router::{config::Config, discovery::models::ModelDiscovery};
 
 #[cfg(test)]
 mod integration_tests {

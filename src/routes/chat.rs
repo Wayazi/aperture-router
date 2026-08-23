@@ -8,6 +8,7 @@ use tracing::{debug, warn};
 use crate::{
     routes::{
         proxy::{proxy_handler_multi, HasModel},
+        shared::MAX_OTHER_FIELDS,
         validate_model_or_error,
     },
     server::AppState,
@@ -120,7 +121,6 @@ pub async fn chat_completions(
     }
 
     // Validate other HashMap size (prevent memory exhaustion)
-    const MAX_OTHER_FIELDS: usize = 50;
     if request.other.len() > MAX_OTHER_FIELDS {
         warn!("Too many extra fields: {}", request.other.len());
         return (

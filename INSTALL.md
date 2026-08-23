@@ -85,8 +85,8 @@ sudo cp aperture-router /usr/local/bin/
 # Required
 export APERTURE_BASE_URL=http://your-aperture-gateway:8080
 
-# Optional - API key for authentication
-export APERTURE_API_KEY=your-api-key-at-least-32-characters
+# Optional - client auth keys clients must present to this router
+export APERTURE_CLIENT_API_KEYS=your-api-key-at-least-32-characters
 
 # Optional - Allow running without auth (development only)
 export APERTURE_ALLOW_NO_AUTH=1
@@ -94,6 +94,8 @@ export APERTURE_ALLOW_NO_AUTH=1
 # Start
 aperture-router
 ```
+
+> `APERTURE_CLIENT_API_KEYS` sets inbound client auth. If your Aperture gateway itself requires a key, set `APERTURE_API_KEY` (upstream gateway key).
 
 ### Method 2: Generate Config
 
@@ -145,8 +147,8 @@ The AUR package includes everything for systemd:
 # Set your Aperture URL
 echo "APERTURE_BASE_URL=http://your-aperture-gateway:8080" | sudo tee /etc/sysconfig/aperture-router
 
-# Optional: Add API key
-echo "APERTURE_API_KEY=your-api-key-here" | sudo tee -a /etc/sysconfig/aperture-router
+# Optional: Add client auth key (required in production mode)
+echo "APERTURE_CLIENT_API_KEYS=your-api-key-here" | sudo tee -a /etc/sysconfig/aperture-router
 
 # Enable and start
 sudo systemctl enable --now aperture-router
@@ -247,7 +249,7 @@ Add an API key:
 
 **Option 1:** Environment variable
 ```bash
-export APERTURE_API_KEY=$(aperture-router config generate --url http://gateway --generate-key 2>&1 | grep "Generated" | awk '{print $4}')
+export APERTURE_CLIENT_API_KEYS=$(openssl rand -hex 24)
 ```
 
 **Option 2:** Config file

@@ -54,7 +54,7 @@ APERTURE_BASE_URL=http://100.100.100.100
 APERTURE_HOST=0.0.0.0
 APERTURE_PORT=8080
 RUST_LOG=info
-APERTURE_API_KEY=your-strong-api-key-here
+APERTURE_CLIENT_API_KEYS=your-strong-api-key-here
 ```
 
 ## Systemd Service

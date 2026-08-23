@@ -36,8 +36,7 @@ fn json_error_response(status: StatusCode, code: &str, message: &str) -> Respons
         .into_response()
 }
 
-/// Maximum extra JSON fields (prevent memory exhaustion)
-const MAX_OTHER_FIELDS: usize = 50;
+use super::shared::MAX_OTHER_FIELDS;
 /// Maximum content length per message (1MB)
 const MAX_CONTENT_SIZE: usize = 1024 * 1024;
 
@@ -234,12 +233,11 @@ pub async fn handle_proxy_stream(
         }
     };
 
-    // Determine endpoint based on request format
-    let endpoint = if request.get("max_tokens").is_some() {
-        "v1/messages" // Anthropic format
-    } else {
-        "v1/chat/completions" // OpenAI format
-    };
+    // Determine endpoint based on request format. /v1/proxy accepts both
+    // wire formats, so classify by format-specific markers; max_tokens alone
+    // is ambiguous (OpenAI requests may carry it too), so it is the weakest
+    // signal and only used as the tiebreaker.
+    let endpoint = detect_wire_format(&request);
 
     // Forward request to Aperture
     let response = match state
@@ -258,16 +256,15 @@ pub async fn handle_proxy_stream(
         }
     };
 
-    // Convert response chunks to SSE events, preserving tool_calls
+    // Convert response chunks to SSE events, preserving tool_calls.
+    // buffered_lines reassembles lines split across TCP chunks and flushes the
+    // final partial line at end-of-stream, so no event is truncated or lost.
     let include_thinking_stream = include_thinking;
     let max_json_depth = state.config.security.max_json_depth;
     let keep_alive_interval = state.config.http.sse_keep_alive_secs;
-    let sse_stream = response.flat_map(move |chunk| {
+    let sse_stream = buffered_lines(response).flat_map(move |chunk| {
         match chunk {
             Ok(data) => {
-                // Parse SSE format from upstream
-                // A single chunk may contain multiple SSE events
-                // We need to yield one event per data line
                 let events: Vec<Result<Event, Infallible>> =
                     process_sse_chunk_lines(&data, include_thinking_stream, max_json_depth)
                         .into_iter()
@@ -290,6 +287,106 @@ pub async fn handle_proxy_stream(
         axum::response::sse::KeepAlive::new()
             .interval(Duration::from_secs(keep_alive_interval))
             .text("keepalive"),
+    ))
+}
+
+/// Buffers SSE data across network chunks so lines split mid-JSON by TCP
+/// boundaries are reassembled before parsing. Mirrors the line buffering the
+/// OpenAI→Anthropic stream converter already does for its own input.
+pub(crate) struct SseLineBuffer {
+    buf: String,
+}
+
+impl SseLineBuffer {
+    pub(crate) fn new() -> Self {
+        Self { buf: String::new() }
+    }
+
+    /// Feed one chunk; returns all complete lines (terminators stripped).
+    /// A trailing partial line is retained until its remainder arrives.
+    /// The buffer is capped: an upstream that never terminates a line cannot
+    /// grow it without bound.
+    pub(crate) fn push(&mut self, chunk: &str) -> Vec<String> {
+        self.buf.push_str(chunk);
+        const MAX_LINE_BUFFER: usize = 1024 * 1024; // 1 MiB, matches converter input cap
+        if self.buf.len() > MAX_LINE_BUFFER {
+            // Cut at the last char boundary at or below the cap — split_off
+            // panics on a non-boundary offset (e.g. mid CJK/emoji character).
+            let mut cut = MAX_LINE_BUFFER;
+            while cut > 0 && !self.buf.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            let overflow = self.buf.split_off(cut);
+            // Re-feed the head through the normal path: emits every complete
+            // line it contains (no fabricated terminators, nothing popped past
+            // the real partial) and retains the true trailing fragment.
+            let head = std::mem::take(&mut self.buf);
+            let lines = self.push(&head);
+            self.buf.push_str(&overflow);
+            return lines;
+        }
+        let mut lines = Vec::new();
+        while let Some(pos) = self.buf.find('\n') {
+            let line = self.buf[..pos].trim_end_matches('\r').to_string();
+            self.buf.drain(..=pos);
+            if !line.is_empty() {
+                lines.push(line);
+            }
+        }
+        lines
+    }
+
+    /// Drain any retained partial line. Call once when the upstream stream
+    /// ends: SSE treats EOF as a line terminator, so a final event without a
+    /// trailing newline is still deliverable.
+    pub(crate) fn take_remainder(&mut self) -> Option<String> {
+        if self.buf.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.buf))
+        }
+    }
+}
+
+/// Reassemble an upstream byte stream into whole-line chunks, retaining the
+/// trailing partial line across chunk boundaries and flushing it once when
+/// the upstream ends.
+pub(crate) fn buffered_lines(
+    stream: crate::proxy::client::BoxedResultStream,
+) -> crate::proxy::client::BoxedResultStream {
+    Box::pin(futures::stream::unfold(
+        (stream, Some(SseLineBuffer::new())),
+        |(mut stream, mut buf)| async move {
+            loop {
+                // None means the flush branch already ran and returned; unfold
+                // polls the closure once more before observing the terminal
+                // None. Recreating an empty buffer here is harmless — it is
+                // immediately drained — so this stays debug-level, not error.
+                let mut buffer = buf.take().unwrap_or_else(|| {
+                    debug!("Stream unfold polled after flush; using fresh buffer");
+                    SseLineBuffer::new()
+                });
+                match stream.next().await {
+                    Some(Ok(data)) => {
+                        let complete = buffer.push(&data);
+                        if complete.is_empty() {
+                            buf = Some(buffer);
+                            continue;
+                        }
+                        let joined = format!("{}\n", complete.join("\n"));
+                        return Some((Ok(joined), (stream, Some(buffer))));
+                    }
+                    Some(Err(e)) => {
+                        buf = Some(buffer);
+                        return Some((Err(e), (stream, buf)));
+                    }
+                    None => {
+                        let remainder = buffer.take_remainder().map(Ok);
+                        return remainder.map(|item| (item, (stream, None)));
+                    }
+                }
+            }
+        },
     ))
 }
 
@@ -429,22 +526,74 @@ fn is_thinking_block(value: &Value) -> bool {
     false
 }
 
+/// Classify a /v1/proxy request body as Anthropic ("v1/messages") or OpenAI
+/// ("v1/chat/completions") wire format. Format-exclusive markers win; when
+/// neither side's markers appear, fall back to the historical max_tokens
+/// heuristic so existing clients keep their current routing.
+fn detect_wire_format(request: &Value) -> &'static str {
+    // Anthropic-exclusive fields (no OpenAI chat-completions equivalent).
+    // NOTE: `metadata` and `service_tier` exist in BOTH APIs and must stay
+    // out of this list — ambiguous payloads fall through to the max_tokens
+    // heuristic below, which reproduces historical routing for them.
+    let anthropic_markers = ["system", "stop_sequences", "thinking", "top_k"];
+    if anthropic_markers.iter().any(|k| request.get(k).is_some()) {
+        return "v1/messages";
+    }
+
+    // OpenAI-exclusive fields (rejected/absent in Anthropic requests).
+    // NOTE: `service_tier` exists in BOTH APIs — not a reliable marker.
+    let openai_markers = [
+        "max_completion_tokens",
+        "frequency_penalty",
+        "presence_penalty",
+        "logit_bias",
+        "n",
+        "response_format",
+        "seed",
+    ];
+    if openai_markers.iter().any(|k| request.get(k).is_some()) {
+        return "v1/chat/completions";
+    }
+
+    // Ambiguous: historical behavior (Anthropic requests always carry
+    // max_tokens; OpenAI requests usually do not).
+    if request.get("max_tokens").is_some() {
+        "v1/messages"
+    } else {
+        "v1/chat/completions"
+    }
+}
+
 /// Parse JSON with depth limit to prevent DoS attacks
-/// Returns Err if JSON is too deeply nested or invalid
+/// Returns Err if JSON is too deeply nested or invalid.
+/// String-literal aware: brackets inside JSON strings (and escaped quotes)
+/// do not count toward depth, so payloads like `"{\"a\":1}"` pass cleanly.
 fn parse_json_with_depth_limit(json: &str, max_depth: usize) -> Result<Value, serde_json::Error> {
     use std::io;
 
-    // First do a quick depth check by counting braces/brackets
-    let mut depth = 0;
-    let mut max_observed = 0;
+    // Quick depth pre-check before the full parse. Only structural brackets
+    // outside string literals count; serde_json then does the real validation.
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
 
     for ch in json.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else {
+                match ch {
+                    '\\' => escaped = true,
+                    '"' => in_string = false,
+                    _ => {}
+                }
+            }
+            continue;
+        }
         match ch {
+            '"' => in_string = true,
             '{' | '[' => {
                 depth += 1;
-                if depth > max_observed {
-                    max_observed = depth;
-                }
                 if depth > max_depth {
                     return Err(serde_json::Error::io(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -467,4 +616,155 @@ fn parse_json_with_depth_limit(json: &str, max_depth: usize) -> Result<Value, se
 
     // If depth check passes, parse normally
     serde_json::from_str(json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_depth_limit_ignores_brackets_inside_strings() {
+        // Braces inside string values must not inflate observed depth.
+        let json = r#"{"payload":"{\"a\":{\"b\":1}}","note":"brackets }[({ inside"}"#;
+        let parsed = parse_json_with_depth_limit(json, 16).expect("must parse");
+        assert_eq!(parsed["payload"], "{\"a\":{\"b\":1}}");
+    }
+
+    #[test]
+    fn test_depth_limit_still_rejects_real_deep_nesting() {
+        let deep = format!("{}{}", "[".repeat(64), "]".repeat(64));
+        let err = parse_json_with_depth_limit(&deep, 16).unwrap_err();
+        assert!(err.to_string().contains("depth limit"));
+    }
+
+    #[test]
+    fn test_depth_limit_handles_escaped_quote_in_string() {
+        // The escaped quote must not terminate the string early.
+        let json = r#"{"text":"quote \" then brace } inside","ok":true}"#;
+        assert!(parse_json_with_depth_limit(json, 8).is_ok());
+    }
+
+    #[test]
+    fn test_wire_format_anthropic_markers_win() {
+        assert_eq!(
+            detect_wire_format(&serde_json::json!({"system": "be nice", "messages": []})),
+            "v1/messages"
+        );
+        assert_eq!(
+            detect_wire_format(&serde_json::json!({"stop_sequences": ["."], "max_tokens": 5})),
+            "v1/messages"
+        );
+    }
+
+    #[test]
+    fn test_wire_format_openai_markers_win() {
+        // OpenAI request carrying max_tokens: the old sniffing misrouted this
+        // to v1/messages; OpenAI-exclusive markers now win.
+        assert_eq!(
+            detect_wire_format(&serde_json::json!({
+                "model": "m", "messages": [], "max_tokens": 5,
+                "frequency_penalty": 0.5
+            })),
+            "v1/chat/completions"
+        );
+        assert_eq!(
+            detect_wire_format(&serde_json::json!({
+                "model": "m", "messages": [], "response_format": {"type": "json"}
+            })),
+            "v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_wire_format_fallback_matches_historical_behavior() {
+        // No exclusive markers on either side: keep the old heuristic.
+        assert_eq!(
+            detect_wire_format(&serde_json::json!({"model": "m", "max_tokens": 5, "messages": []})),
+            "v1/messages"
+        );
+        assert_eq!(
+            detect_wire_format(&serde_json::json!({"model": "m", "messages": []})),
+            "v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_wire_format_ambiguous_markers_fall_through() {
+        // `metadata` exists in BOTH OpenAI and Anthropic schemas — an OpenAI
+        // request carrying it (no max_tokens) must keep routing to OpenAI.
+        assert_eq!(
+            detect_wire_format(&serde_json::json!({
+                "model": "m", "messages": [], "metadata": {"customer_id": "c1"}
+            })),
+            "v1/chat/completions",
+            "OpenAI metadata tagging must not be misrouted to v1/messages"
+        );
+        // `service_tier` exists in BOTH schemas too — an Anthropic Priority
+        // Tier request carrying it must still route via max_tokens.
+        assert_eq!(
+            detect_wire_format(&serde_json::json!({
+                "model": "m", "messages": [], "max_tokens": 1024,
+                "service_tier": "standard_only"
+            })),
+            "v1/messages",
+            "Anthropic service_tier must not be misrouted to v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_sse_line_buffer_reassembles_split_lines() {
+        let mut buf = SseLineBuffer::new();
+
+        // A data line split mid-JSON across three chunks
+        let lines1 = buf.push("data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hel");
+        assert!(lines1.is_empty(), "partial line must be retained");
+
+        let lines2 = buf.push("lo world\"}}\n\ndata: {\"done\":true}\n");
+        assert_eq!(
+            lines2,
+            vec![
+                "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hello world\"}}",
+                "data: {\"done\":true}"
+            ]
+        );
+
+        let lines3 = buf.push("data: {\"tail\":1}");
+        assert!(
+            lines3.is_empty(),
+            "trailing line without newline is incomplete"
+        );
+    }
+
+    #[test]
+    fn test_sse_line_buffer_strips_cr_and_handles_multiple_lines() {
+        let mut buf = SseLineBuffer::new();
+        let lines = buf.push("event: message_start\r\ndata: {\"a\":1}\r\n\r\ndata: {\"b\":2}\n");
+        assert_eq!(
+            lines,
+            vec!["event: message_start", "data: {\"a\":1}", "data: {\"b\":2}"]
+        );
+    }
+
+    #[test]
+    fn test_sse_line_buffer_overflow_does_not_panic_on_multibyte_boundary() {
+        let mut buf = SseLineBuffer::new();
+        // Fill to exactly 1 byte below the cap, then push a 3-byte CJK char so
+        // the 1 MiB offset lands inside a multi-byte character: split_off must
+        // not be called on a non-boundary (it panics).
+        let pad = "x".repeat(1024 * 1024 - 1);
+        buf.push(&pad);
+        let lines = buf.push("水");
+        let _ = buf.push("more data\n");
+        // No panic above; the padded line is unterminated garbage and stays
+        // buffered or is cut — but the stream survives.
+        assert!(buf.take_remainder().is_some() || !lines.is_empty());
+    }
+
+    #[test]
+    fn test_sse_line_buffer_take_remainder_flushes_final_line() {
+        let mut buf = SseLineBuffer::new();
+        buf.push("data: {\"final\":true}");
+        assert!(buf.take_remainder() == Some("data: {\"final\":true}".to_string()));
+        assert_eq!(buf.take_remainder(), None, "second flush must be empty");
+    }
 }

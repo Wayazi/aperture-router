@@ -37,7 +37,7 @@ APERTURE_BASE_URL=http://100.100.100.100
 APERTURE_HOST=0.0.0.0
 APERTURE_PORT=8080
 RUST_LOG=info
-APERTURE_API_KEY=your-strong-api-key-here
+APERTURE_CLIENT_API_KEYS=your-strong-api-key-here
 ```
 
 | Variable | Default | Description |
@@ -45,7 +45,8 @@ APERTURE_API_KEY=your-strong-api-key-here
 | `APERTURE_BASE_URL` | — | Aperture gateway URL (required) |
 | `APERTURE_HOST` | `127.0.0.1` | Listen address |
 | `APERTURE_PORT` | `8765` | Listen port |
-| `APERTURE_API_KEY` | — | Client API key (min 32 chars) |
+| `APERTURE_CLIENT_API_KEYS` | — | Client auth keys for inbound requests (comma-separated; min 32 chars each) |
+| `APERTURE_API_KEY` | — | Aperture *gateway* key (upstream) — set only if your Aperture gateway itself requires auth |
 | `RUST_LOG` | `aperture_router=info` | Log filter |
 | `APERTURE_ALLOW_NO_AUTH` | — | Set `1` to disable auth (dev only) |
 

@@ -34,9 +34,9 @@ trusted_proxies = []
 # Standard rate limiting
 requests_per_second = 10
 burst_size = 30
-# Health endpoint rate limiting (more lenient)
-health_requests_per_second = 20
-health_burst_size = 50
+# DEPRECATED — parsed but ignored: /health is unthrottled by design
+# health_requests_per_second = 20
+# health_burst_size = 50
 
 [security]
 # API keys for authentication (empty = no authentication)

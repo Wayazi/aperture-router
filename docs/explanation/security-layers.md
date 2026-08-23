@@ -210,7 +210,7 @@ Beyond rate limiting, each route handler enforces structural limits to prevent a
 ### Request Body Limit
 
 `RequestBodyLimitLayer::new(config.security.max_body_size_bytes)` is applied as a Tower
-layer in `create_router` (`src/server.rs:359`). Default is 10 MB, max allowed is 100 MB
+layer in `create_router` (`src/server.rs:365-370`). Default is 10 MB, max allowed is 100 MB
 (enforced in `Config::validate`). This rejects oversized payloads before they reach the
 handler.
 

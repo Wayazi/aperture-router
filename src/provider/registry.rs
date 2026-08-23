@@ -2,15 +2,24 @@
 // Copyright (c) 2026 aperture-router contributors
 
 use crate::config::{EndpointStyle, Provider};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug)]
 struct RegistryInner {
     providers: HashMap<String, Provider>,
     model_to_provider: HashMap<String, String>,
+    /// Providers defined in the user's config file. They must survive
+    /// discovery refreshes even when the gateway snapshot doesn't mention
+    /// them, and their model mappings always take precedence over
+    /// discovered ones.
+    static_providers: HashSet<String>,
+    /// Config providers explicitly disabled with `enabled = false`. Their
+    /// names are reserved: discovery must never auto-add an enabled provider
+    /// under a name the user deliberately turned off.
+    disabled_static_providers: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -23,10 +32,12 @@ impl ProviderRegistry {
     pub fn new(providers: Vec<Provider>) -> Self {
         let mut provider_map = HashMap::new();
         let mut model_map = HashMap::new();
+        let mut static_providers = HashSet::new();
+        let mut disabled_static_providers = HashSet::new();
 
         for provider in providers {
+            let name = provider.name.clone();
             if provider.enabled {
-                let name = provider.name.clone();
                 for model in &provider.models {
                     if let Some(existing) = model_map.get(model) {
                         if existing != &name {
@@ -38,7 +49,10 @@ impl ProviderRegistry {
                     }
                     model_map.insert(model.clone(), name.clone());
                 }
+                static_providers.insert(name.clone());
                 provider_map.insert(name, provider);
+            } else {
+                disabled_static_providers.insert(name);
             }
         }
 
@@ -46,6 +60,8 @@ impl ProviderRegistry {
             inner: Arc::new(RwLock::new(RegistryInner {
                 providers: provider_map,
                 model_to_provider: model_map,
+                static_providers,
+                disabled_static_providers,
             })),
             aperture_base_url: String::new(),
         }
@@ -68,14 +84,18 @@ impl ProviderRegistry {
         let active_providers: std::collections::HashSet<_> =
             models_by_provider.keys().cloned().collect();
 
-        // Remove stale providers that are no longer in discovery
+        // Remove stale discovered providers, but never remove providers that
+        // came from the user's config file — the gateway snapshot may not
+        // mention them (e.g. custom endpoint-style overrides), yet they must
+        // keep serving their configured models.
+        let static_providers = inner.static_providers.clone();
         let previous_count = inner.providers.len();
         inner
             .providers
-            .retain(|name, _| active_providers.contains(name));
-        inner
-            .model_to_provider
-            .retain(|_, provider| active_providers.contains(provider));
+            .retain(|name, _| active_providers.contains(name) || static_providers.contains(name));
+        inner.model_to_provider.retain(|_, provider| {
+            active_providers.contains(provider) || static_providers.contains(provider)
+        });
 
         let removed_count = previous_count - inner.providers.len();
         if removed_count > 0 {
@@ -83,43 +103,83 @@ impl ProviderRegistry {
         }
 
         for (provider_id, model_ids) in models_by_provider {
+            if inner.disabled_static_providers.contains(provider_id) {
+                // The user explicitly disabled a config provider with this
+                // name — never resurrect it as an enabled auto-provider.
+                debug!(
+                    "Skipping discovery group '{}' — disabled in config",
+                    provider_id
+                );
+                continue;
+            }
+
             let provider_exists = inner.providers.contains_key(provider_id);
 
             if !provider_exists {
+                // Infer endpoint style for auto-added providers: namespaced
+                // model IDs ("vendor/model") indicate aggregator upstreams
+                // (OpenRouter-style) that serve standard /v1/ paths, while
+                // bare IDs (e.g. glm-5.x behind Aperture) expect the direct
+                // no-prefix style. Majority wins for mixed groups; explicit
+                // [[providers]] config always overrides this default.
+                let namespaced =
+                    model_ids.iter().filter(|m| m.contains('/')).count() * 2 > model_ids.len();
+                let endpoint_style = if namespaced {
+                    EndpointStyle::OpenaiV1
+                } else {
+                    EndpointStyle::OpenaiDirect
+                };
+
                 let new_provider = Provider {
                     name: provider_id.clone(),
                     base_url: aperture_url.to_string(),
                     api_key: None,
-                    endpoint_style: EndpointStyle::OpenaiDirect,
+                    endpoint_style,
                     models: model_ids.clone(),
                     enabled: true,
                 };
 
                 inner.providers.insert(provider_id.clone(), new_provider);
                 info!(
-                    "Auto-added provider '{}' with {} models",
+                    "Auto-added provider {:?} with {} models",
                     provider_id,
                     model_ids.len()
                 );
-            } else {
+            } else if !inner.static_providers.contains(provider_id) {
+                // Auto-added provider seen again: replace its model list with
+                // the current snapshot so removed models stop routing instead
+                // of accumulating forever. (Static providers are never
+                // touched here — their curated lists are config-owned.)
                 if let Some(provider) = inner.providers.get_mut(provider_id) {
-                    // Merge discovered models with existing configured models
-                    // instead of replacing the entire list
-                    let existing: std::collections::HashSet<_> =
-                        provider.models.iter().cloned().collect();
-                    for model_id in model_ids {
-                        if !existing.contains(model_id) {
-                            provider.models.push(model_id.clone());
-                        }
-                    }
+                    provider.models = model_ids.clone();
                 }
+            } else {
+                debug!(
+                    "Discovery group {:?} collides with static provider — leaving its model list untouched",
+                    provider_id
+                );
             }
 
-            // Insert discovered models into the routing map
+            // Insert discovered models into the routing map. Mappings that
+            // already exist come from the user's config file (discovery runs
+            // after startup) and always win — an auto-added provider uses a
+            // default endpoint style that may not suit every upstream, so a
+            // deliberate static route must never be silently replaced.
             for model_id in model_ids {
-                inner
-                    .model_to_provider
-                    .insert(model_id.clone(), provider_id.clone());
+                match inner.model_to_provider.get(model_id) {
+                    Some(existing) if existing != provider_id => {
+                        debug!(
+                            "Keeping static route for model '{}' -> '{}' (discovery suggested '{}')",
+                            model_id, existing, provider_id
+                        );
+                    }
+                    Some(_) => {}
+                    None => {
+                        inner
+                            .model_to_provider
+                            .insert(model_id.clone(), provider_id.clone());
+                    }
+                }
             }
         }
 
@@ -131,15 +191,13 @@ impl ProviderRegistry {
                 provider
                     .models
                     .iter()
+                    .filter(|m| !inner.model_to_provider.contains_key(*m))
                     .map(|m| (m.clone(), provider_id.clone()))
             })
             .collect();
 
         for (model_id, provider_id) in manual_entries {
-            inner
-                .model_to_provider
-                .entry(model_id)
-                .or_insert(provider_id);
+            inner.model_to_provider.insert(model_id, provider_id);
         }
 
         let all_valid_models: std::collections::HashSet<String> = inner
@@ -408,5 +466,84 @@ mod tests {
         models.sort();
 
         assert_eq!(models, vec!["model-a", "model-b", "model-c"]);
+    }
+
+    #[tokio::test]
+    async fn test_static_provider_survives_discovery_refresh() {
+        // A config-file provider whose models the gateway snapshot doesn't
+        // mention must NOT be dropped on refresh.
+        let registry = ProviderRegistry::new(vec![create_test_provider(
+            "custom-override",
+            "https://api.example.com",
+            EndpointStyle::OpenaiV1,
+            vec!["vendor/model-x"],
+        )]);
+
+        let mut discovered = HashMap::new();
+        discovered.insert("GLM".to_string(), vec!["glm-5.2".to_string()]);
+
+        registry
+            .update_from_discovery(&discovered, "http://gateway.example")
+            .await;
+
+        assert!(registry.get_provider("custom-override").await.is_some());
+        assert!(registry
+            .get_provider_for_model("vendor/model-x")
+            .await
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_static_model_mapping_beats_discovery() {
+        // Static route: vendor/model-x -> my-provider (OpenaiV1).
+        // Discovery reports the same model under group 'agg' (auto-added).
+        // The static mapping must win so the custom endpoint style is used.
+        let registry = ProviderRegistry::new(vec![create_test_provider(
+            "my-provider",
+            "https://api.example.com",
+            EndpointStyle::OpenaiV1,
+            vec!["vendor/model-x"],
+        )]);
+
+        let mut discovered = HashMap::new();
+        discovered.insert("agg".to_string(), vec!["vendor/model-x".to_string()]);
+
+        registry
+            .update_from_discovery(&discovered, "http://gateway.example")
+            .await;
+
+        let provider = registry
+            .get_provider_for_model("vendor/model-x")
+            .await
+            .expect("model must remain routable");
+        assert_eq!(provider.name, "my-provider");
+        assert_eq!(provider.endpoint_style, EndpointStyle::OpenaiV1);
+    }
+
+    #[tokio::test]
+    async fn test_auto_added_provider_endpoint_style_inference() {
+        // Namespaced model IDs (aggregator upstreams) auto-add with
+        // OpenaiV1; bare IDs (Aperture GLM-style) with OpenaiDirect.
+        let mut discovered = HashMap::new();
+        discovered.insert(
+            "Openrouter".to_string(),
+            vec![
+                "stealth/ox-alpha".to_string(),
+                "openrouter/free".to_string(),
+            ],
+        );
+        discovered.insert("GLM".to_string(), vec!["glm-5.2".to_string()]);
+
+        let registry =
+            ProviderRegistry::with_aperture_url(vec![], "http://gateway.example".to_string());
+        registry
+            .update_from_discovery(&discovered, "http://gateway.example")
+            .await;
+
+        let agg = registry.get_provider("Openrouter").await.unwrap();
+        assert_eq!(agg.endpoint_style, EndpointStyle::OpenaiV1);
+
+        let glm = registry.get_provider("GLM").await.unwrap();
+        assert_eq!(glm.endpoint_style, EndpointStyle::OpenaiDirect);
     }
 }

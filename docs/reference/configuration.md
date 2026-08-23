@@ -24,10 +24,11 @@ Loaded after the config file; override the corresponding fields.
 | `APERTURE_PORT` | `port` |
 | `APERTURE_BASE_URL` | `aperture.base_url` |
 | `APERTURE_API_KEY` | `aperture.api_key` (then removed from env) |
+| `APERTURE_CLIENT_API_KEYS` | `security.api_keys` (comma-separated; env-only bootstrap and `config generate`) |
 | `APERTURE_ALLOW_NO_AUTH` | sets `security.require_auth_in_prod = false` |
 | `RUST_LOG` | log filter |
 
-`APERTURE_API_KEY` populates the Aperture gateway key (used when forwarding to Aperture), **not** `security.api_keys`. For client auth keys, use a config file.
+`APERTURE_API_KEY` populates the Aperture gateway key (used when forwarding to Aperture), **not** `security.api_keys`. For inbound client auth keys without a config file, set `APERTURE_CLIENT_API_KEYS=key1,key2`.
 
 ## Top-level fields
 

@@ -4,7 +4,7 @@
 use crate::config::{Config, CorsConfig, SecurityConfig};
 use axum::{
     extract::{ConnectInfo, Request, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     middleware::Next,
     response::Response,
 };
@@ -39,6 +39,10 @@ pub struct AuthState {
     pub api_keys: Vec<Zeroizing<String>>,
     pub admin_api_keys: Vec<Zeroizing<String>>,
     pub failed_attempts: Arc<RwLock<HashMap<IpAddr, Vec<Instant>>>>,
+    /// Active bans: IP -> instant the ban expires. Set when the failure
+    /// threshold is reached; independent of the failure window so a ban
+    /// persists for the full configured ban_duration.
+    banned_until: Arc<RwLock<HashMap<IpAddr, Instant>>>,
     pub max_attempts: usize,
     pub ban_duration: Duration,
     pub window_duration: Duration,
@@ -71,6 +75,7 @@ impl AuthState {
                 .collect(),
             admin_api_keys: admin_keys,
             failed_attempts: Arc::new(RwLock::new(HashMap::new())),
+            banned_until: Arc::new(RwLock::new(HashMap::new())),
             max_attempts: security_config.max_auth_attempts,
             ban_duration: Duration::from_secs(security_config.ban_duration_secs),
             window_duration: Duration::from_secs(security_config.auth_window_secs),
@@ -91,17 +96,11 @@ impl AuthState {
     }
 
     pub async fn is_banned(&self, client_ip: IpAddr) -> bool {
-        let attempts = self.failed_attempts.read().await;
-        if let Some(attempt_times) = attempts.get(&client_ip) {
-            let now = Instant::now();
-            let recent_count = attempt_times
-                .iter()
-                .filter(|t| now.duration_since(**t) < self.window_duration)
-                .count();
-            recent_count >= self.max_attempts
-        } else {
-            false
-        }
+        let banned = self.banned_until.read().await;
+        banned
+            .get(&client_ip)
+            .map(|expires_at| Instant::now() < *expires_at)
+            .unwrap_or(false)
     }
 
     pub async fn record_failure(&self, client_ip: IpAddr) -> Result<(), StatusCode> {
@@ -128,11 +127,26 @@ impl AuthState {
 
         attempt_times.retain(|timestamp| now.duration_since(*timestamp) < self.window_duration);
 
-        if attempt_times.len() >= self.max_attempts {
+        // Original contract: a failure that arrives when the threshold is
+        // already met returns 429 (and extends the ban); the Nth failure that
+        // reaches the threshold still records Ok — is_banned() flips true.
+        let threshold_already_met = attempt_times.len() >= self.max_attempts;
+
+        if threshold_already_met {
+            let mut banned = self.banned_until.write().await;
+            banned.insert(client_ip, Instant::now() + self.ban_duration);
             return Err(StatusCode::TOO_MANY_REQUESTS);
         }
 
         attempt_times.push(now);
+        if attempt_times.len() >= self.max_attempts {
+            // Hold both locks through the insert: dropping failed_attempts
+            // first would let a concurrent record_success slip between the
+            // maps and leave a stale ban after a successful login.
+            let mut banned = self.banned_until.write().await;
+            banned.insert(client_ip, Instant::now() + self.ban_duration);
+            return Ok(());
+        }
 
         Ok(())
     }
@@ -140,6 +154,8 @@ impl AuthState {
     pub async fn record_success(&self, client_ip: IpAddr) {
         let mut attempts = self.failed_attempts.write().await;
         attempts.remove(&client_ip);
+        let mut banned = self.banned_until.write().await;
+        banned.remove(&client_ip);
     }
 
     /// Start background cleanup task with supervision
@@ -149,6 +165,7 @@ impl AuthState {
         shutdown_token: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         let failed_attempts = self.failed_attempts.clone();
+        let banned_until = self.banned_until.clone();
         let window_duration = self.window_duration;
 
         tokio::spawn(async move {
@@ -170,6 +187,10 @@ impl AuthState {
 
                 // Remove IPs with empty attempt lists to prevent memory DoS
                 attempts.retain(|_, times| !times.is_empty());
+
+                // Expire elapsed bans
+                let mut banned = banned_until.write().await;
+                banned.retain(|_, expires_at| *expires_at > now);
             }
         })
     }
@@ -271,6 +292,35 @@ pub async fn auth_middleware(
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    // Extract client IP
+    let client_ip = match extract_client_ip(&request, &auth.trusted_proxies) {
+        Ok(ip) => ip,
+        Err(status) => return Err(status),
+    };
+
+    // Reject declared-oversize bodies before any buffering. The body-limit
+    // layer only enforces when the handler reads the body, so without this
+    // pre-auth check an anonymous client can dribble up to max_body_size_bytes
+    // into a held-open connection per attempt (slowloris-style pressure).
+    if let Some(len) = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        if len > config.security.max_body_size_bytes as u64 {
+            warn!(
+                "Rejected oversized request from {} (Content-Length {} > limit {})",
+                client_ip, len, config.security.max_body_size_bytes
+            );
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+    }
+
+    // Per-IP request rate limit for ALL requests, applied even when auth is
+    // disabled — an open deployment still needs throttling.
+    rate_limiter.check_rate_limit(client_ip).await?;
+
     // If no API keys configured, check if production mode requires auth
     if !auth.is_enabled() {
         if config.security.require_auth_in_prod && !cfg!(debug_assertions) {
@@ -278,15 +328,6 @@ pub async fn auth_middleware(
         }
         return Ok(next.run(request).await);
     }
-
-    // Extract client IP
-    let client_ip = match extract_client_ip(&request, &auth.trusted_proxies) {
-        Ok(ip) => ip,
-        Err(status) => return Err(status),
-    };
-
-    // Check per-IP request rate limit for ALL requests (before auth)
-    rate_limiter.check_rate_limit(client_ip).await?;
 
     // Check if IP is already banned from too many auth failures
     if auth.is_banned(client_ip).await {
@@ -332,7 +373,11 @@ pub async fn auth_middleware(
 /// Admin-specific authentication middleware
 /// Requires admin API key for access to administrative endpoints
 pub async fn admin_auth_middleware(
-    State((_config, auth)): State<(Arc<Config>, Arc<AuthState>)>,
+    State((_config, auth, rate_limiter)): State<(
+        Arc<Config>,
+        Arc<AuthState>,
+        crate::middleware::RateLimiter,
+    )>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
@@ -363,6 +408,10 @@ pub async fn admin_auth_middleware(
         Ok(ip) => ip,
         Err(status) => return Err(status),
     };
+
+    // Per-IP rate limit: /admin/* must be brute-forceable only at the
+    // configured request rate, same as the main API routes.
+    rate_limiter.check_rate_limit(client_ip).await?;
 
     // Check if IP is already banned from too many auth failures
     if auth.is_banned(client_ip).await {

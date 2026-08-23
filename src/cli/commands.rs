@@ -416,11 +416,30 @@ pub fn generate_config(
         println!();
     }
 
-    // Get API key from environment if set
+    // APERTURE_API_KEY is the upstream gateway key (same meaning as the
+    // config-file path); remove after read so it cannot leak via /proc.
     if let Ok(key) = std::env::var("APERTURE_API_KEY") {
         if !key.is_empty() {
-            config.security.api_keys = vec![key];
+            config.aperture.api_key = Some(key);
         }
+        std::env::remove_var("APERTURE_API_KEY");
+    }
+
+    // Inbound client auth keys (comma-separated). Only applied when no keys
+    // exist yet, so an explicit --generate-key above is not overwritten.
+    // Always scrubbed from the environment after reading.
+    if let Ok(keys) = std::env::var("APERTURE_CLIENT_API_KEYS") {
+        if config.security.api_keys.is_empty() {
+            let parsed: Vec<String> = keys
+                .split(',')
+                .map(|k| k.trim().to_string())
+                .filter(|k| !k.is_empty())
+                .collect();
+            if !parsed.is_empty() {
+                config.security.api_keys = parsed;
+            }
+        }
+        std::env::remove_var("APERTURE_CLIENT_API_KEYS");
     }
 
     // Allow no auth if explicitly set

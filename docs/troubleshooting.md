@@ -44,11 +44,16 @@ API keys configured. This is a safety gate to prevent running an open proxy in p
 
 1. **Add an API key** (recommended):
    ```bash
-   export APERTURE_API_KEY=$(openssl rand -base64 24)
+   export APERTURE_CLIENT_API_KEYS=$(openssl rand -hex 24)
    ```
    Or generate a config with a key:
    ```bash
    aperture-router config generate --url http://gateway --generate-key
+   ```
+   Or add keys to the config file:
+   ```toml
+   [security]
+   api_keys = ["your-key-at-least-32-chars"]
    ```
 
 2. **Disable auth** (development only, not recommended):
@@ -58,7 +63,7 @@ API keys configured. This is a safety gate to prevent running an open proxy in p
 
 **Note:** In debug builds (`cargo run`), this is a warning, not an error.
 
-**Where:** `src/main.rs:228`, `src/config.rs:581`
+**Where:** `src/main.rs:242`, `src/config.rs:587`
 
 ---
 
@@ -180,6 +185,37 @@ to Aperture (which returns its own error).
 4. If using aliases, verify `model_aliases` in config
 
 **Where:** `src/routes/chat.rs:151`, `src/routes/messages.rs:644`
+
+---
+
+### Claude Code says "Request too large (max 32MB)"
+
+**Error (shown by Claude Code):**
+```text
+Request too large (max 32MB). Accumulated images and attachments in the conversation
+pushed the request over the limit. Run /compact, or double press esc to go back and
+remove attachments.
+```
+
+**Cause:** Claude Code shows this message for *any* `413` response when
+`ANTHROPIC_BASE_URL` points at a gateway — including this router's own body limit.
+The "32MB" figure is Anthropic's first-party API cap and is misleading here: the
+router rejects requests larger than `security.max_body_size_bytes` (default 10 MB)
+with `413 Payload Too Large`, and Claude Code replaces that response with its canned
+32 MB text. Typical trigger: pasted screenshots accumulate as base64 in conversation
+history until the serialized request exceeds the configured limit. Check the journal:
+`status=413 Payload Too Large` on `POST /v1/messages` confirms the router rejected it.
+
+**Fix:** Raise the inbound limit (validation caps it at 100 MB):
+```toml
+[security]
+max_body_size_bytes = 104857600  # 100MB
+```
+Then restart the service (`sudo systemctl restart aperture-router`). If requests still
+fail above 32 MB against an upstream that enforces Anthropic's real 32 MB cap,
+`/compact` remains the only fix — that payload genuinely cannot be sent.
+
+**Where:** `src/server.rs:365`, `src/config.rs:557`
 
 ---
 
@@ -329,6 +365,22 @@ persistent, increase `burst_size` in config or reduce request frequency.
 **Cause:** Generic error returned to the client when an upstream request fails. The detailed
 error is logged internally (to avoid leaking upstream internals).
 
+**Real-world example (gateway migration):** Claude Code showed `API Error: 502` with no
+detail, while the journal held the actual cause:
+```text
+ERROR ... Upstream streaming request to http://<new-gateway-ip>/v1/chat/completions failed
+with status: 404 Not Found body: {"error":{"message":"no route found for model
+\"<model-id>\" for user \"<tailnet-user>\""},"source":"aperture"}
+```
+The configured gateway address had been changed to a node that only routes a subset of
+models; the requested model existed only on the original node. The 502 was correct behavior
+— the diagnosis path is always: read the ERROR line directly above the WARN/502 in the
+journal, then probe the upstream yourself:
+```bash
+journalctl -u aperture-router --since "10 min ago" | grep -E "ERROR|failed"
+curl -s http://<upstream-ip>/v1/models | jq -r '.data[].id'   # does the model exist there?
+```
+
 **Fix:** Check server logs with `journalctl -u aperture-router -p warn` for the actual
 upstream error.
 
@@ -347,7 +399,7 @@ after 3 retries with backoff.
 3. Check Tailscale connectivity
 4. Look for `"Connection error fetching models"` in logs
 
-**Where:** `src/discovery/models.rs:200`
+**Where:** `src/discovery/models.rs:253`
 
 ---
 
@@ -361,7 +413,7 @@ sends data without newlines, or sends extremely long lines.
 **Fix:** This is likely an upstream bug. Check if the provider returns properly formatted
 SSE (lines terminated with `\n`).
 
-**Where:** `src/types/conversion.rs:571`
+**Where:** `src/types/conversion.rs:613`
 
 ---
 
@@ -376,7 +428,7 @@ SSE (lines terminated with `\n`).
 max_streaming_size_bytes = 209715200  # 200MB
 ```
 
-**Where:** `src/proxy/client.rs:183`
+**Where:** `src/proxy/client.rs:414`
 
 ---
 
@@ -391,7 +443,7 @@ max_streaming_size_bytes = 209715200  # 200MB
 request_timeout_secs = 600
 ```
 
-**Where:** `src/proxy/client.rs:405`
+**Where:** `src/proxy/client.rs:399`
 
 ---
 

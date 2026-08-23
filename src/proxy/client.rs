@@ -50,7 +50,16 @@ fn make_utf8_stream(
                     }
                 }
 
-                let mut buf = leftover.lock().unwrap();
+                // Poisoned-lock recovery: a panic while holding the leftover
+                // buffer must not kill the stream; the buffer contents are
+                // still plain bytes and remain valid.
+                let mut buf = match leftover.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => {
+                        error!("UTF-8 leftover mutex poisoned; recovering buffer");
+                        poisoned.into_inner()
+                    }
+                };
                 buf.extend_from_slice(&bytes);
 
                 match std::str::from_utf8(&buf) {
@@ -274,37 +283,7 @@ impl ProxyClient {
         // 2. Block internal IPs (private, loopback, link-local)
         //    Exception: CGN range 100.64.0.0/10 is allowed for Tailscale providers
         // 3. DNS rebinding protection: resolve and validate IPs at request time
-        if let Some(host) = parsed_url.host_str() {
-            // Always block metadata endpoints regardless of provider config
-            if is_metadata_endpoint(host) {
-                return Err(anyhow::anyhow!(
-                    "Access to metadata endpoint '{}' is blocked (SSRF protection)",
-                    host
-                ));
-            }
-
-            // For IP-based hosts, validate they're not private/loopback
-            // Exception: CGN range (100.64.0.0/10) allowed for Tailscale
-            if let Ok(ip) = host.parse::<IpAddr>() {
-                if is_internal_ip_strict(&ip) {
-                    return Err(anyhow::anyhow!(
-                        "Access to internal IP '{}' is blocked (SSRF protection). \
-                         Use Tailscale (100.64.0.0/10) or public IPs for providers.",
-                        ip
-                    ));
-                }
-            } else {
-                // For hostname-based URLs, resolve DNS and validate IPs (DNS rebinding protection)
-                let port = parsed_url
-                    .port()
-                    .unwrap_or(if parsed_url.scheme() == "https" {
-                        443
-                    } else {
-                        80
-                    });
-                validate_resolved_ips(host, port).await?;
-            }
-        }
+        validate_provider_url_host(&parsed_url).await?;
 
         debug!("Forwarding request to custom URL: {}", url);
 
@@ -350,24 +329,7 @@ impl ProxyClient {
             ));
         }
 
-        if let Some(host) = parsed_url.host_str() {
-            if is_metadata_endpoint(host) {
-                return Err(anyhow::anyhow!(
-                    "Access to metadata endpoint '{}' is blocked (SSRF protection)",
-                    host
-                ));
-            }
-
-            if let Ok(ip) = host.parse::<IpAddr>() {
-                if is_internal_ip_strict(&ip) {
-                    return Err(anyhow::anyhow!(
-                        "Access to internal IP '{}' is blocked (SSRF protection). \
-                         Use Tailscale (100.64.0.0/10) or public IPs for providers.",
-                        ip
-                    ));
-                }
-            }
-        }
+        validate_provider_url_host(&parsed_url).await?;
 
         debug!("Forwarding request to custom URL (raw): {}", url);
 
@@ -400,24 +362,7 @@ impl ProxyClient {
             ));
         }
 
-        if let Some(host) = parsed_url.host_str() {
-            if is_metadata_endpoint(host) {
-                return Err(anyhow::anyhow!(
-                    "Access to metadata endpoint '{}' is blocked (SSRF protection)",
-                    host
-                ));
-            }
-
-            if let Ok(ip) = host.parse::<IpAddr>() {
-                if is_internal_ip_strict(&ip) {
-                    return Err(anyhow::anyhow!(
-                        "Access to internal IP '{}' is blocked (SSRF protection). \
-                         Use Tailscale (100.64.0.0/10) or public IPs for providers.",
-                        ip
-                    ));
-                }
-            }
-        }
+        validate_provider_url_host(&parsed_url).await?;
 
         debug!("Forwarding streaming request to custom URL: {}", url);
 
@@ -437,7 +382,16 @@ impl ProxyClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = match crate::http_client::read_body_capped(
+                response,
+                crate::http_client::MAX_ERROR_BODY_BYTES,
+                "Upstream error body",
+            )
+            .await
+            {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(_) => String::new(),
+            };
             error!(
                 "Upstream streaming request to {} failed with status: {} body: {}",
                 url, status, body
@@ -599,14 +553,56 @@ async fn validate_resolved_ips(host: &str, port: u16) -> anyhow::Result<()> {
             Ok(())
         }
         Err(e) => {
-            // DNS resolution failure - log but don't block (let the request proceed and fail naturally)
-            debug!(
-                "DNS resolution failed for {}: {} (will fail at connection time)",
+            // DNS resolution failure — fail CLOSED. An attacker controlling DNS can
+            // answer SERVFAIL during validation and rebind to an internal IP at
+            // connect time; letting the request proceed would defeat this check.
+            warn!(
+                "DNS resolution failed for {}: {} (request blocked: fail-closed rebinding protection)",
                 host, e
             );
-            Ok(())
+            Err(anyhow::anyhow!(
+                "DNS resolution failed for '{}' (SSRF protection: fail-closed)",
+                host
+            ))
         }
     }
+}
+
+/// SSRF host validation shared by all provider-forwarding paths.
+///
+/// Blocks cloud metadata hosts, internal/loopback IP literals (CGN 100.64.0.0/10
+/// allowed for Tailscale), and for hostname-based URLs resolves DNS and validates
+/// every returned address (DNS rebinding protection). Every `*_to_url` forward
+/// variant must call this before sending.
+async fn validate_provider_url_host(parsed_url: &Url) -> anyhow::Result<()> {
+    if let Some(host) = parsed_url.host_str() {
+        if is_metadata_endpoint(host) {
+            return Err(anyhow::anyhow!(
+                "Access to metadata endpoint '{}' is blocked (SSRF protection)",
+                host
+            ));
+        }
+
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            if is_internal_ip_strict(&ip) {
+                return Err(anyhow::anyhow!(
+                    "Access to internal IP '{}' is blocked (SSRF protection). \
+                     Use Tailscale (100.64.0.0/10) or public IPs for providers.",
+                    ip
+                ));
+            }
+        } else {
+            let port = parsed_url
+                .port()
+                .unwrap_or(if parsed_url.scheme() == "https" {
+                    443
+                } else {
+                    80
+                });
+            validate_resolved_ips(host, port).await?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -727,5 +723,34 @@ mod tests {
             sse_keep_alive_secs: 15,
         };
         assert!(ProxyClient::new(config, http_config, 1024).is_err());
+    }
+}
+
+#[cfg(test)]
+mod panic_recovery_tests {
+    #[test]
+    fn test_poisoned_mutex_recovery_pattern() {
+        // Reproduce the exact recovery pattern used in make_utf8_stream:
+        // a panicked holder poisons the mutex; the reader must recover the
+        // (still valid) buffer contents instead of panicking.
+        let leftover: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(b"part".to_vec());
+        let clone_for_panic = std::sync::Arc::new(leftover);
+        let writer = std::sync::Arc::clone(&clone_for_panic);
+        let _ = std::thread::spawn(move || {
+            let _guard = writer.lock().unwrap();
+            panic!("simulated panic while holding the lock");
+        })
+        .join();
+
+        let mut buf = match clone_for_panic.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                // The data written before the panic is intact.
+                poisoned.into_inner()
+            }
+        };
+        assert_eq!(&*buf, b"part", "pre-panic buffer content must survive");
+        buf.extend_from_slice(b"-continued");
+        assert_eq!(&*buf, b"part-continued");
     }
 }

@@ -12,6 +12,12 @@ fn strip_cache_control(value: &Value) -> Value {
     v
 }
 
+fn get_reasoning(obj: &Value) -> Option<&str> {
+    obj.get("reasoning_content")
+        .or_else(|| obj.get("reasoning"))
+        .and_then(|c| c.as_str())
+}
+
 pub fn anthropic_request_to_openai(anthropic: &Value) -> Value {
     let mut messages = Vec::new();
 
@@ -102,7 +108,7 @@ pub fn openai_response_to_anthropic(openai: &Value) -> Value {
     let mut content: Vec<Value> = Vec::new();
 
     if let Some(msg) = message {
-        if let Some(reasoning) = msg.get("reasoning_content").and_then(|c| c.as_str()) {
+        if let Some(reasoning) = get_reasoning(msg) {
             if !reasoning.is_empty() {
                 content.push(serde_json::json!({
                     "type": "thinking",
@@ -309,6 +315,27 @@ fn convert_anthropic_message_expanded(role: &str, content: Option<&Value>) -> Ve
                 }));
                 return messages;
             }
+
+            // No tool_use: strip thinking blocks before conversion. OpenAI-compatible
+            // upstreams have no equivalent field, and the generic path below would
+            // otherwise serialize them as literal JSON text into the prompt.
+            let filtered: Vec<Value> = blocks
+                .iter()
+                .filter(|b| {
+                    let t = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    t != "thinking" && t != "redacted_thinking"
+                })
+                .cloned()
+                .collect();
+            // A turn that carried only reasoning has no OpenAI representation;
+            // emitting an empty-content message can trip strict upstreams.
+            if !filtered.is_empty() {
+                messages.push(convert_anthropic_message(
+                    role,
+                    Some(&Value::Array(filtered)),
+                ));
+            }
+            return messages;
         }
 
         messages.push(convert_anthropic_message(role, content));
@@ -346,14 +373,23 @@ fn convert_anthropic_message_expanded(role: &str, content: Option<&Value>) -> Ve
         }
 
         if !tool_results.is_empty() {
+            // OpenAI requires role:"tool" messages to immediately follow the
+            // assistant message carrying the matching tool_calls — emit them
+            // before any follow-up user text.
+            messages.extend(tool_results);
             if !non_tool_blocks.is_empty() {
                 let user_content = convert_blocks_to_openai_content(&non_tool_blocks);
-                messages.push(serde_json::json!({
-                    "role": "user",
-                    "content": user_content
-                }));
+                let has_parts = user_content
+                    .as_array()
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(true);
+                if has_parts {
+                    messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": user_content
+                    }));
+                }
             }
-            messages.extend(tool_results);
             return messages;
         }
     }
@@ -365,17 +401,17 @@ fn convert_anthropic_message_expanded(role: &str, content: Option<&Value>) -> Ve
 fn convert_blocks_to_openai_content(blocks: &[&Value]) -> Value {
     let parts: Vec<Value> = blocks
         .iter()
-        .map(|b| {
+        .filter_map(|b| {
             let b = strip_cache_control(b);
             let block_type = b.get("type").and_then(|t| t.as_str()).unwrap_or("text");
             match block_type {
-                "text" => serde_json::json!({
+                "text" => Some(serde_json::json!({
                     "type": "text",
                     "text": b.get("text").unwrap_or(&Value::Null)
-                }),
+                })),
                 "image" => {
                     let source = b.get("source").unwrap_or(&Value::Null);
-                    serde_json::json!({
+                    Some(serde_json::json!({
                         "type": "image_url",
                         "image_url": {
                             "url": format!("data:{};base64,{}",
@@ -383,12 +419,14 @@ fn convert_blocks_to_openai_content(blocks: &[&Value]) -> Value {
                                 source.get("data").and_then(|d| d.as_str()).unwrap_or("")
                             )
                         }
-                    })
+                    }))
                 }
-                _ => serde_json::json!({
+                // No OpenAI equivalent — must not leak as serialized JSON text
+                "thinking" | "redacted_thinking" => None,
+                _ => Some(serde_json::json!({
                     "type": "text",
                     "text": serde_json::to_string(&b).unwrap_or_default()
-                }),
+                })),
             }
         })
         .collect();
@@ -405,17 +443,17 @@ fn convert_anthropic_message(role: &str, content: Option<&Value>) -> Value {
             if has_non_text {
                 let parts: Vec<Value> = blocks
                     .iter()
-                    .map(|b| {
+                    .filter_map(|b| {
                         let b = strip_cache_control(b);
                         let block_type = b.get("type").and_then(|t| t.as_str()).unwrap_or("text");
                         match block_type {
-                            "text" => serde_json::json!({
+                            "text" => Some(serde_json::json!({
                                 "type": "text",
                                 "text": b.get("text").unwrap_or(&Value::Null)
-                            }),
+                            })),
                             "image" => {
                                 let source = b.get("source").unwrap_or(&Value::Null);
-                                serde_json::json!({
+                                Some(serde_json::json!({
                                     "type": "image_url",
                                     "image_url": {
                                         "url": format!("data:{};base64,{}",
@@ -423,19 +461,21 @@ fn convert_anthropic_message(role: &str, content: Option<&Value>) -> Value {
                                             source.get("data").and_then(|d| d.as_str()).unwrap_or("")
                                         )
                                     }
-                                })
+                                }))
                             }
                             "tool_result" => {
                                 let text = extract_text_from_content(b.get("content").unwrap_or(&Value::Null));
-                                serde_json::json!({
+                                Some(serde_json::json!({
                                     "type": "text",
                                     "text": text
-                                })
+                                }))
                             }
-                            _ => serde_json::json!({
+                            // No OpenAI equivalent — must not leak as serialized JSON text
+                            "thinking" | "redacted_thinking" => None,
+                            _ => Some(serde_json::json!({
                                 "type": "text",
                                 "text": serde_json::to_string(&b).unwrap_or_default()
-                            }),
+                            })),
                         }
                     })
                     .collect();
@@ -530,6 +570,8 @@ pub struct OpenAIToAnthropicStreamConverter {
     thinking_block_open: bool,
     tool_blocks: HashMap<usize, ToolBlockState>,
     tool_block_order: Vec<usize>,
+    next_tool_slot: usize,
+    last_tool_slot: Option<usize>,
     input_tokens: u32,
     output_tokens: u32,
     output_tokens_from_upstream: bool,
@@ -540,7 +582,6 @@ const MAX_LINE_BUFFER: usize = 1024 * 1024;
 
 struct ToolBlockState {
     id: String,
-    name: String,
     block_index: usize,
 }
 
@@ -556,6 +597,8 @@ impl OpenAIToAnthropicStreamConverter {
             thinking_block_open: false,
             tool_blocks: HashMap::new(),
             tool_block_order: Vec::new(),
+            next_tool_slot: 0,
+            last_tool_slot: None,
             input_tokens: 0,
             output_tokens: 0,
             output_tokens_from_upstream: false,
@@ -657,9 +700,23 @@ impl OpenAIToAnthropicStreamConverter {
         let delta = choice.and_then(|c| c.get("delta"));
 
         if let Some(delta) = delta {
-            if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+            if let Some(reasoning) = get_reasoning(delta) {
                 if !reasoning.is_empty() {
                     if !self.thinking_block_open {
+                        // Interleaved reasoning after text: close the open
+                        // text block first so the thinking block gets its own
+                        // index instead of colliding with it.
+                        if self.text_block_open {
+                            self.text_block_open = false;
+                            events.push(make_sse_event(
+                                "content_block_stop",
+                                &serde_json::json!({
+                                    "type": "content_block_stop",
+                                    "index": self.content_block_index
+                                }),
+                            ));
+                            self.content_block_index += 1;
+                        }
                         self.thinking_block_open = true;
                         events.push(make_sse_event(
                             "content_block_start",
@@ -747,14 +804,56 @@ impl OpenAIToAnthropicStreamConverter {
                 }
 
                 for tc in tool_calls {
-                    let tc_index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                    let explicit_index =
+                        tc.get("index").and_then(|i| i.as_u64()).map(|i| i as usize);
+                    let tc_id = tc
+                        .get("id")
+                        .and_then(|i| i.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
 
-                    if tc.get("id").is_some() {
-                        let id = tc
-                            .get("id")
-                            .and_then(|i| i.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                    // Resolve which tool slot this delta belongs to. Providers
+                    // that omit per-delta "index" (Mistral/llama.cpp-style) are
+                    // matched by id instead; unknown ids get a fresh sequential
+                    // slot so parallel calls never collide on slot 0. Deltas with
+                    // neither id nor index continue the most recently active call.
+                    let tc_index = match explicit_index {
+                        Some(i) => i,
+                        None => match &tc_id {
+                            Some(id) => self
+                                .tool_blocks
+                                .iter()
+                                .find(|(_, st)| &st.id == id)
+                                .map(|(&k, _)| k)
+                                .unwrap_or_else(|| {
+                                    let slot = self.next_tool_slot;
+                                    self.next_tool_slot += 1;
+                                    slot
+                                }),
+                            None => self.last_tool_slot.unwrap_or(0),
+                        },
+                    };
+                    self.last_tool_slot = Some(tc_index);
+
+                    // A new content block starts for a genuinely new call: a
+                    // fresh id, or an id-less fragment arriving at a slot with
+                    // no open block (some backends send "id": null — synthesize
+                    // one so the call is not silently dropped). Repeated ids
+                    // (backends that resend id+name per delta) continue the block.
+                    let existing_id = self.tool_blocks.get(&tc_index).map(|st| st.id.clone());
+                    let is_new_call = match (&tc_id, &existing_id) {
+                        (Some(id), Some(existing)) => existing != id,
+                        (Some(_), None) => true,
+                        (None, Some(_)) => false,
+                        (None, None) => true,
+                    };
+
+                    if is_new_call {
+                        let id = tc_id.clone().unwrap_or_else(|| {
+                            let synth = format!("call_synth_{}", self.next_tool_slot);
+                            self.next_tool_slot += 1;
+                            synth
+                        });
                         let name = tc
                             .get("function")
                             .and_then(|f| f.get("name"))
@@ -765,30 +864,26 @@ impl OpenAIToAnthropicStreamConverter {
                         let block_index = self.content_block_index;
                         self.content_block_index += 1;
 
-                        self.tool_blocks.insert(
-                            tc_index,
-                            ToolBlockState {
-                                id,
-                                name,
-                                block_index,
-                            },
-                        );
-                        self.tool_block_order.push(tc_index);
+                        if !self.tool_block_order.contains(&tc_index) {
+                            self.tool_block_order.push(tc_index);
+                        }
 
-                        let tool_state = self.tool_blocks.get(&tc_index).unwrap();
                         events.push(make_sse_event(
                             "content_block_start",
                             &serde_json::json!({
                                 "type": "content_block_start",
-                                "index": tool_state.block_index,
+                                "index": block_index,
                                 "content_block": {
                                     "type": "tool_use",
-                                    "id": tool_state.id,
-                                    "name": tool_state.name,
+                                    "id": id,
+                                    "name": name,
                                     "input": {}
                                 }
                             }),
                         ));
+
+                        self.tool_blocks
+                            .insert(tc_index, ToolBlockState { id, block_index });
                     }
 
                     if let Some(args) = tc
@@ -1024,6 +1119,293 @@ mod tests {
         assert_eq!(anthropic["stop_reason"], "tool_use");
         assert_eq!(anthropic["content"][0]["type"], "tool_use");
         assert_eq!(anthropic["content"][0]["name"], "get_weather");
+    }
+
+    #[test]
+    fn test_openrouter_reasoning_field_mapped_to_thinking() {
+        let openai = json!({
+            "id": "gen-1",
+            "model": "stealth/ox-alpha",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "ok",
+                    "reasoning": "The user wants me to say ok."
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20}
+        });
+        let anthropic = openai_response_to_anthropic(&openai);
+        assert_eq!(anthropic["content"][0]["type"], "thinking");
+        assert_eq!(
+            anthropic["content"][0]["thinking"],
+            "The user wants me to say ok."
+        );
+        assert_eq!(anthropic["content"][1]["type"], "text");
+        assert_eq!(anthropic["content"][1]["text"], "ok");
+    }
+
+    #[test]
+    fn test_stream_converter_openrouter_reasoning_deltas() {
+        let mut conv = OpenAIToAnthropicStreamConverter::new("stealth/ox-alpha".to_string());
+
+        let chunk = r#"data: {"id":"1","object":"chat.completion.chunk","model":"stealth/ox-alpha","choices":[{"index":0,"delta":{"role":"assistant","reasoning":"Thinking..."}}]}"#;
+        let events = conv.convert_chunk(&format!("{}\n\n", chunk));
+        assert!(events
+            .iter()
+            .any(|e| e.event_type == "content_block_start" && e.data.contains("\"thinking\"")));
+        assert!(events
+            .iter()
+            .any(|e| e.event_type == "content_block_delta" && e.data.contains("Thinking...")));
+
+        let chunk2 = r#"data: {"id":"1","object":"chat.completion.chunk","model":"stealth/ox-alpha","choices":[{"index":0,"delta":{"content":"ok"}}]}"#;
+        let events2 = conv.convert_chunk(&format!("{}\n\n", chunk2));
+        assert!(events2.iter().any(|e| e.event_type == "content_block_stop"));
+        assert!(events2
+            .iter()
+            .any(|e| e.event_type == "content_block_start" && e.data.contains("\"text\"")));
+    }
+
+    #[test]
+    fn test_stream_converter_interleaved_reasoning_gets_distinct_indices() {
+        let mut conv = OpenAIToAnthropicStreamConverter::new("test-model".to_string());
+
+        let chunk = |field: &str, val: &str| {
+            format!(
+                "data: {{\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"model\":\"t\",\"choices\":[{{\"index\":0,\"delta\":{{\"{field}\":\"{val}\"}}}}]}}\n\n"
+            )
+        };
+
+        let e1 = conv.convert_chunk(&chunk("content", "Hello"));
+        let e2 = conv.convert_chunk(&chunk("reasoning", "hmm"));
+        let e3 = conv.convert_chunk(&chunk("content", " world"));
+
+        let all: Vec<&SseEventData> = e1.iter().chain(e2.iter()).chain(e3.iter()).collect();
+
+        // Collect (index, kind) for starts and stops in emission order
+        let mut seen: Vec<(u64, String)> = Vec::new();
+        for e in &all {
+            let v: Value = serde_json::from_str(&e.data).unwrap();
+            let idx = v["index"].as_u64().unwrap_or(0);
+            match e.event_type.as_str() {
+                "content_block_start" => seen.push((
+                    idx,
+                    v["content_block"]["type"]
+                        .as_str()
+                        .unwrap_or("?")
+                        .to_string(),
+                )),
+                "content_block_stop" => seen.push((idx, "stop".to_string())),
+                _ => {}
+            }
+        }
+
+        // text starts @0; reasoning closes it (stop@0) and opens thinking@1;
+        // next text closes thinking (stop@1) and opens a fresh text block@2
+        assert_eq!(
+            seen,
+            vec![
+                (0, "text".to_string()),
+                (0, "stop".to_string()),
+                (1, "thinking".to_string()),
+                (1, "stop".to_string()),
+                (2, "text".to_string()),
+            ],
+            "interleaved reasoning must not collide indices: {:?}",
+            seen
+        );
+    }
+
+    #[test]
+    fn test_stream_converter_idless_continuations_follow_last_active_call() {
+        let mut conv = OpenAIToAnthropicStreamConverter::new("t".to_string());
+
+        // llama.cpp-style: id only on each call's FIRST fragment; continuation
+        // fragments carry neither id nor index.
+        let first = |id: &str| {
+            format!(
+                "data: {{\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"model\":\"t\",\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"id\":\"{id}\",\"function\":{{\"name\":\"f\",\"arguments\":\"A\"}}}}]}}}}]}}\n\n"
+            )
+        };
+        let cont = |args: &str| {
+            format!(
+                "data: {{\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"model\":\"t\",\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"function\":{{\"arguments\":\"{args}\"}}}}]}}}}]}}\n\n"
+            )
+        };
+
+        conv.convert_chunk(&first("call_a"));
+        conv.convert_chunk(&cont("1")); // -> call_a
+        conv.convert_chunk(&first("call_b"));
+        let e4 = conv.convert_chunk(&cont("2")); // -> call_b
+
+        let deltas: Vec<(u64, String)> = e4
+            .iter()
+            .filter(|e| e.event_type == "content_block_delta")
+            .map(|e| {
+                let v: Value = serde_json::from_str(&e.data).unwrap();
+                (v["index"].as_u64().unwrap(), v.to_string())
+            })
+            .collect();
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].0, 1, "continuation must follow last active call");
+        assert!(deltas[0].1.contains("\"2\""));
+    }
+
+    #[test]
+    fn test_stream_converter_null_id_call_is_synthesized_not_dropped() {
+        let mut conv = OpenAIToAnthropicStreamConverter::new("t".to_string());
+
+        // tc_obj is the complete tool_call JSON object (balanced braces)
+        let delta = |tc_obj: &str| {
+            format!(
+                "data: {{\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"model\":\"t\",\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{tc_obj}]}}}}]}}\n\n"
+            )
+        };
+        let open = r#"{"index":0,"id":null,"function":{"name":"f","arguments":"12"}}"#;
+        let cont = r#"{"index":0,"id":"","function":{"arguments":"34"}}"#;
+
+        let e1 = conv.convert_chunk(&delta(open));
+        assert!(
+            e1.iter().any(|e| e.event_type == "content_block_start"),
+            "null-id call must open a block"
+        );
+
+        let e2 = conv.convert_chunk(&delta(cont));
+        assert!(
+            e2.iter().any(|e| e.event_type == "content_block_delta"),
+            "continuation with empty-string id must forward args"
+        );
+
+        let stops = conv.close_open_blocks();
+        assert_eq!(
+            stops
+                .iter()
+                .filter(|e| e.event_type == "content_block_stop")
+                .count(),
+            1,
+            "synthesized block must close exactly once"
+        );
+    }
+
+    #[test]
+    fn test_assistant_thinking_blocks_not_serialized_into_prompt() {
+        let anthropic = json!({
+            "model": "test",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "secret thoughts", "signature": "sig1"},
+                    {"type": "text", "text": "answer"}
+                ]},
+                {"role": "user", "content": "again"}
+            ]
+        });
+        let openai = anthropic_request_to_openai(&anthropic);
+        let serialized = serde_json::to_string(&openai).unwrap();
+        assert!(!serialized.contains("secret thoughts"));
+        assert!(!serialized.contains("sig1"));
+        assert!(serialized.contains("answer"));
+    }
+
+    #[test]
+    fn test_tool_result_emitted_before_followup_user_text() {
+        let anthropic = json!({
+            "model": "test",
+            "messages": [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1", "content": "sunny"},
+                    {"type": "text", "text": "now summarize"}
+                ]}
+            ]
+        });
+        let openai = anthropic_request_to_openai(&anthropic);
+        let msgs = openai["messages"].as_array().unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        let tool_pos = roles.iter().position(|r| *r == "tool").unwrap();
+        let user_pos = roles.iter().rposition(|r| *r == "user").unwrap();
+        assert!(
+            tool_pos < user_pos,
+            "tool message must precede follow-up user text, got {:?}",
+            roles
+        );
+    }
+
+    #[test]
+    fn test_stream_converter_indexless_tool_calls_get_distinct_blocks() {
+        let mut conv = OpenAIToAnthropicStreamConverter::new("test-model".to_string());
+
+        let mk = |id: &str, args: &str| {
+            format!(
+                "data: {{\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"model\":\"t\",\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"id\":\"{}\",\"function\":{{\"arguments\":\"{}\"}}}}]}}}}]}}\n\n",
+                id, args
+            )
+        };
+
+        let events1 = conv.convert_chunk(&mk("call_a", "123"));
+        let events2 = conv.convert_chunk(&mk("call_b", "456"));
+
+        let starts: Vec<&str> = events1
+            .iter()
+            .chain(events2.iter())
+            .filter(|e| e.event_type == "content_block_start")
+            .map(|e| e.data.as_str())
+            .collect();
+        assert_eq!(
+            starts.len(),
+            2,
+            "two calls must open two blocks: {:?}",
+            starts
+        );
+        assert!(starts[0].contains("call_a") && starts[1].contains("call_b"));
+
+        let stops: Vec<usize> = conv
+            .close_open_blocks()
+            .iter()
+            .filter(|e| e.event_type == "content_block_stop")
+            .map(|e| {
+                serde_json::from_str::<Value>(&e.data).unwrap()["index"]
+                    .as_u64()
+                    .unwrap() as usize
+            })
+            .collect();
+        assert_eq!(stops.len(), 2, "both blocks must be closed exactly once");
+        assert_ne!(stops[0], stops[1], "stop indices must differ: {:?}", stops);
+    }
+
+    #[test]
+    fn test_stream_converter_repeated_id_continues_block() {
+        let mut conv = OpenAIToAnthropicStreamConverter::new("test-model".to_string());
+
+        // Mistral-style backend resends full id+name on every delta
+        let delta = |args: &str| {
+            format!(
+                "data: {{\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"model\":\"t\",\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"id\":\"call_1\",\"function\":{{\"name\":\"f\",\"arguments\":\"{}\"}}}}]}}}}]}}\n\n",
+                args
+            )
+        };
+
+        let e1 = conv.convert_chunk(&delta("12"));
+        let e2 = conv.convert_chunk(&delta("34"));
+
+        let start_count = std::iter::once(&e1)
+            .chain(std::iter::once(&e2))
+            .flatten()
+            .filter(|e| e.event_type == "content_block_start")
+            .count();
+        assert_eq!(start_count, 1, "repeated id must not open a second block");
+
+        let deltas = std::iter::once(&e1)
+            .chain(std::iter::once(&e2))
+            .flatten()
+            .filter(|e| e.event_type == "content_block_delta")
+            .count();
+        assert_eq!(deltas, 2, "both argument fragments must be forwarded");
     }
 
     #[test]

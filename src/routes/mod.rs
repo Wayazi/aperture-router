@@ -8,6 +8,7 @@ pub mod health;
 pub mod messages;
 pub mod models;
 pub mod proxy;
+pub mod shared;
 pub mod streaming;
 
 pub use error::error_response;
