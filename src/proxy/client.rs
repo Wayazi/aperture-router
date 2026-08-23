@@ -16,6 +16,9 @@ use crate::config::{ApertureConfig, EndpointStyle, HttpConfig};
 use crate::http_client::{create_client_with_timeouts, is_allowed_endpoint};
 use crate::security::{is_internal_ip, is_internal_ip_strict, is_metadata_endpoint};
 
+/// A boxed stream of upstream text chunks (UTF-8-reassembled) with per-chunk errors.
+pub type BoxedResultStream = Pin<Box<dyn Stream<Item = anyhow::Result<String>> + Send>>;
+
 /// Convert a byte stream into a String stream with UTF-8 buffering.
 /// Multi-byte characters split across TCP chunks are reassembled correctly.
 fn make_utf8_stream(

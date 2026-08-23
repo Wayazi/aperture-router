@@ -257,7 +257,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> RouterHa
     let rate_limiter = crate::middleware::RateLimiter::new(
         config.rate_limit.burst_size as usize,
         std::time::Duration::from_secs(
-            config.rate_limit.burst_size / config.rate_limit.requests_per_second.max(1),
+            (config.rate_limit.burst_size / config.rate_limit.requests_per_second.max(1)).max(1),
         ),
     );
 
