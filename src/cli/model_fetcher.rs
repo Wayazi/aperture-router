@@ -52,9 +52,7 @@ fn generate_display_name(model_id: &str, provider_id: &str) -> String {
 
 /// Fetch models from Aperture and enrich with metadata
 pub async fn fetch_models(base_url: &str) -> anyhow::Result<Vec<EnrichedModel>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+    let client = crate::http_client::create_client_with_timeouts(30, 10)?;
 
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
 

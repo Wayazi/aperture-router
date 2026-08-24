@@ -8,67 +8,74 @@ use crate::config::Provider;
 use crate::proxy::client::ProxyClient;
 use crate::ProviderRegistry;
 
-const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
-const MAX_FAILOVER_ATTEMPTS: usize = 3;
+use super::shared::{provider_api_key, MAX_FAILOVER_ATTEMPTS};
+
+use crate::http_client::MAX_NON_STREAMING_RESPONSE_BYTES as MAX_RESPONSE_SIZE;
 
 pub trait HasModel {
     fn model(&self) -> &str;
 }
 
+/// A response builder can only fail on invalid status/header values, which
+/// these helpers never produce — but instead of panicking on request paths,
+/// fall back to a builder-free response that cannot fail.
+fn fallback_response() -> Response<Body> {
+    let mut resp = Response::new(Body::empty());
+    *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+    resp
+}
+
 fn json_error(status: StatusCode, message: &str) -> Response<Body> {
-    Response::builder()
+    match Response::builder()
         .status(status)
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::json!({"error": message}).to_string(),
-        ))
-        .expect("failed to build error response")
+        )) {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("Response build failed ({}), returning bare 500", e);
+            fallback_response()
+        }
+    }
 }
 
 fn json_response(status: StatusCode, body: impl Into<String>) -> Response<Body> {
-    Response::builder()
+    match Response::builder()
         .status(status)
         .header("content-type", "application/json")
         .body(Body::from(body.into()))
-        .expect("failed to build json response")
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("Response build failed ({}), returning bare 500", e);
+            fallback_response()
+        }
+    }
 }
 
 async fn process_upstream_response(response: ReqwestResponse) -> Response<Body> {
     let status = response.status();
 
-    let response_body = match response.text().await {
-        Ok(body) => body,
+    let response_body = match crate::http_client::read_body_capped(
+        response,
+        MAX_RESPONSE_SIZE,
+        "Upstream response",
+    )
+    .await
+    {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(e) => {
             error!("Failed to read response body: {}", e);
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to read response");
+            return json_error(StatusCode::BAD_GATEWAY, "Response too large");
         }
     };
-
-    if response_body.len() > MAX_RESPONSE_SIZE {
-        error!("Response too large: {} bytes", response_body.len());
-        return json_error(StatusCode::BAD_GATEWAY, "Response too large");
-    }
 
     json_response(status, response_body)
 }
 
 fn build_provider_url(provider: &Provider, default_endpoint: &str) -> String {
     ProviderRegistry::build_endpoint_url(provider, default_endpoint)
-}
-
-fn get_provider_api_key(
-    provider: &Provider,
-    default_key: Option<&String>,
-    gateway_url: &str,
-) -> Option<String> {
-    if provider.api_key.is_some() {
-        return provider.api_key.clone();
-    }
-    if provider.base_url.trim_end_matches('/') == gateway_url.trim_end_matches('/') {
-        default_key.cloned()
-    } else {
-        None
-    }
 }
 
 #[allow(clippy::result_large_err)]
@@ -116,7 +123,8 @@ async fn try_provider(
     let url = build_provider_url(provider, default_endpoint);
     debug!("Built URL: {}", url);
 
-    let api_key = get_provider_api_key(provider, proxy_client.api_key(), proxy_client.base_url());
+    let api_key = provider_api_key(provider, proxy_client.api_key(), proxy_client.base_url())
+        .map(str::to_string);
 
     match proxy_client
         .forward_request_to_url_raw(

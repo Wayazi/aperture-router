@@ -10,7 +10,7 @@ Context file for AI agents (Claude Code, OpenCode, Cursor, Copilot) working on t
 - **Framework:** Axum 0.8
 - **Runtime:** Tokio (multi-thread)
 - **TLS:** rustls (single backend, no OpenSSL)
-- **Version:** 0.3.1
+- **Version:** 0.3.2
 - **Binary size:** ~6.5 MB (stripped)
 - **RSS:** ~4.2 MB idle
 

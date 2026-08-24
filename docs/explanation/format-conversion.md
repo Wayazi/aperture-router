@@ -156,9 +156,9 @@ Each OpenAI chunk's `delta` is examined for three fields:
    call (emit `content_block_start` with `tool_use`); if it has `arguments`, emit
    `input_json_delta` with the partial JSON string.
 
-The converter tracks tool calls by their OpenAI `index` field, because tool call arguments
-arrive in multiple chunks. The `tool_block_order` vector preserves insertion order for
-block-stop emission.
+The converter allocates each tool call its own slot keyed by the call's `id` (falling back
+to `index` when absent); continuation deltas follow the most recently active call. The
+`tool_block_order` vector preserves insertion order for block-stop emission.
 
 ### Output Token Counting
 
@@ -174,7 +174,7 @@ across two `convert_chunk` calls. The converter maintains a `line_buffer` (`Stri
 processes complete lines (up to `\n`). This is tested in
 `test_stream_converter_line_buffer_across_chunks`.
 
-The buffer has a 1 MB cap (`MAX_LINE_BUFFER`, `src/types/conversion.rs:539`). If exceeded
+The buffer has a 1 MB cap (`MAX_LINE_BUFFER`, `src/types/conversion.rs:581`). If exceeded
 (e.g. a malformed upstream sending without newlines), the stream is closed with an `error`
 event to prevent unbounded memory growth.
 

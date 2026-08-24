@@ -81,7 +81,9 @@ aperture-router config generate --url http://100.100.100.100 -o /etc/aperture-ro
 | `-o, --output <PATH>` | Output path (default: config path) |
 | `--generate-key` | Generate a random API key and print it |
 
-Reads `APERTURE_BASE_URL`, `APERTURE_API_KEY`, and `APERTURE_ALLOW_NO_AUTH` from the environment. Generated keys are `apr_`-prefixed base62 of two UUIDv4 values.
+Reads `APERTURE_BASE_URL`, `APERTURE_API_KEY` (gateway key), `APERTURE_CLIENT_API_KEYS`, and `APERTURE_ALLOW_NO_AUTH` from the environment. Generated keys are `apr_`-prefixed base62 of two UUIDv4 values.
+
+> `--generate-key` takes precedence: if it produces a key, `APERTURE_CLIENT_API_KEYS` is ignored (and still scrubbed from the environment).
 
 ### `config fetch`
 
@@ -165,12 +167,13 @@ Runs `Config::validate()` and prints a safe summary (no secrets). Exits non-zero
 |----------|--------|
 | `APERTURE_BASE_URL` | Aperture gateway URL |
 | `APERTURE_API_KEY` | Aperture gateway API key (removed from env after load) |
+| `APERTURE_CLIENT_API_KEYS` | Comma-separated client auth keys (removed from env after load) |
 | `APERTURE_HOST` | Override `host` |
 | `APERTURE_PORT` | Override `port` |
 | `APERTURE_ALLOW_NO_AUTH` | Disable auth requirement |
 | `RUST_LOG` | Log filter (default `aperture_router=info`) |
 
-`APERTURE_API_KEY` sets the gateway key used when proxying to Aperture — it is **not** a client auth key. Client auth keys go in `security.api_keys` in the config file.
+`APERTURE_API_KEY` sets the gateway key used when proxying to Aperture — it is **not** a client auth key. Client auth keys go in `security.api_keys` in the config file, or in `APERTURE_CLIENT_API_KEYS` (comma-separated) for env-only setups.
 
 ## Logging
 

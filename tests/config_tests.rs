@@ -197,23 +197,24 @@ mod config_tests {
     #[test]
     fn test_config_validation_health_rate_limit_zero_rps() {
         let mut config = Config::default();
+        config.security.api_keys = vec!["abcdefghijklmnopqrstuvwxyz123456".to_string()];
         config.rate_limit.health_requests_per_second = 0;
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Health rate limit requests per second cannot be 0"));
+        // Deprecated knobs are warn-and-ignore: zero values no longer reject.
+        assert!(
+            config.validate().is_ok(),
+            "deprecated health knobs must be accepted"
+        );
     }
 
     #[test]
     fn test_config_validation_health_rate_limit_zero_burst() {
         let mut config = Config::default();
+        config.security.api_keys = vec!["abcdefghijklmnopqrstuvwxyz123456".to_string()];
         config.rate_limit.health_burst_size = 0;
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Health rate limit burst size cannot be 0"));
+        assert!(
+            config.validate().is_ok(),
+            "deprecated health knobs must be accepted"
+        );
     }
 
     #[test]
@@ -304,10 +305,11 @@ mod config_tests {
             max_body_size_bytes = 5242880
         "#;
 
-        let config_path = "/tmp/test_config.toml";
-        fs::write(config_path, config_content).expect("Failed to write test config file");
-
-        let config = Config::load(config_path).expect("Failed to load config");
+        // tempfile gives a unique path: parallel test runs cannot collide.
+        let config_file = tempfile::NamedTempFile::new().expect("Failed to create temp file");
+        let config_path = config_file.path().to_str().unwrap().to_string();
+        fs::write(&config_path, config_content).expect("Failed to write test config file");
+        let config = Config::load(&config_path).expect("Failed to load config");
         assert_eq!(config.host, "192.168.1.1");
         assert_eq!(config.port, 9000);
         assert_eq!(config.aperture.base_url, "http://test.example.com");
@@ -315,9 +317,6 @@ mod config_tests {
             config.aperture.api_key,
             Some("test-api-key-32-chars-long-1234567".to_string())
         );
-
-        // Clean up
-        fs::remove_file(config_path).ok();
     }
 
     #[test]
@@ -333,17 +332,16 @@ mod config_tests {
     #[test]
     fn test_config_load_invalid_toml() {
         let config_content = "invalid [toml syntax";
-        let config_path = "/tmp/test_invalid_config.toml";
-        fs::write(config_path, config_content).expect("Failed to write test config file");
+        let config_file = tempfile::NamedTempFile::new().expect("Failed to create temp file");
+        let config_path = config_file.path().to_str().unwrap().to_string();
+        fs::write(&config_path, config_content).expect("Failed to write test config file");
 
-        let result = Config::load(config_path);
+        let result = Config::load(&config_path);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .to_string()
             .contains("Failed to parse config file"));
-
-        fs::remove_file(config_path).ok();
     }
 
     #[test]

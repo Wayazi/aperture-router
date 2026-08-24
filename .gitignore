@@ -38,3 +38,6 @@ SESSION-*.md
 *REPORT.md
 *IMPLEMENTATION*.md
 *AUDIT*.md
+
+# Agent tooling output
+graphify-out/

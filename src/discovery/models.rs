@@ -146,13 +146,19 @@ impl ModelDiscovery {
             }
 
             match request.send().await {
-                Ok(response) => {
+                Ok(mut response) => {
                     if !response.status().is_success() {
                         let status = response.status();
-                        let error_body = response
-                            .text()
+                        let error_body = String::from_utf8_lossy(
+                            &crate::http_client::read_body_capped(
+                                response,
+                                crate::http_client::MAX_ERROR_BODY_BYTES,
+                                "Discovery error body",
+                            )
                             .await
-                            .unwrap_or_else(|_| "Unable to read error body".to_string());
+                            .unwrap_or_default(),
+                        )
+                        .into_owned();
                         let err = anyhow::anyhow!(
                             "Failed to fetch models from {}: {} - {}",
                             url,
@@ -171,7 +177,59 @@ impl ModelDiscovery {
                         return Err(err);
                     }
 
-                    let models_response: ModelsResponse = match response.json().await {
+                    // Size-cap the semi-trusted response body before parsing
+                    // so a runaway upstream cannot exhaust memory.
+                    const MAX_MODELS_BODY_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
+                    if let Some(len) = response.content_length() {
+                        if len as usize > MAX_MODELS_BODY_BYTES {
+                            let err = anyhow::anyhow!(
+                                "Models response too large: {} bytes (limit {})",
+                                len,
+                                MAX_MODELS_BODY_BYTES
+                            );
+                            warn!(
+                                "Rejected models response (attempt {}): {}",
+                                attempt + 1,
+                                err
+                            );
+                            last_error = Some(err);
+                            continue;
+                        }
+                    }
+                    // Read in bounded chunks rather than .bytes(): chunked or
+                    // close-delimited responses have no Content-Length, and
+                    // .bytes() would buffer the entire body before the size
+                    // check could run. Aborting mid-body also drops the
+                    // connection instead of re-downloading the whole thing.
+                    let mut body: Vec<u8> = Vec::new();
+                    let read_result: anyhow::Result<()> = async {
+                        while let Some(chunk) = response
+                            .chunk()
+                            .await
+                            .map_err(|e| anyhow::anyhow!("Failed to read body: {}", e))?
+                        {
+                            if body.len() + chunk.len() > MAX_MODELS_BODY_BYTES {
+                                anyhow::bail!(
+                                    "Models response too large: exceeds {} bytes",
+                                    MAX_MODELS_BODY_BYTES
+                                );
+                            }
+                            body.extend_from_slice(&chunk);
+                        }
+                        Ok(())
+                    }
+                    .await;
+                    if let Err(err) = read_result {
+                        warn!(
+                            "Rejected models response (attempt {}): {}",
+                            attempt + 1,
+                            err
+                        );
+                        last_error = Some(err);
+                        continue;
+                    }
+
+                    let models_response: ModelsResponse = match serde_json::from_slice(&body) {
                         Ok(r) => r,
                         Err(e) => {
                             warn!(
@@ -208,6 +266,19 @@ impl ModelDiscovery {
         url: &Url,
     ) -> anyhow::Result<DiscoverySnapshot> {
         let _ = url;
+
+        // Hard ceiling on snapshot size — the gateway response is
+        // semi-trusted and this endpoint repeats every refresh interval, so
+        // a runaway upstream must not be able to exhaust memory.
+        const MAX_MODELS_PER_SNAPSHOT: usize = 10_000;
+        if models_response.data.len() > MAX_MODELS_PER_SNAPSHOT {
+            anyhow::bail!(
+                "Gateway reported {} models, exceeding the {} limit",
+                models_response.data.len(),
+                MAX_MODELS_PER_SNAPSHOT
+            );
+        }
+
         let model_count = models_response.data.len();
 
         // Process models and extract provider metadata from Aperture
@@ -217,13 +288,36 @@ impl ModelDiscovery {
         let mut new_providers: HashSet<String> = HashSet::new();
 
         for api_model in models_response.data {
+            // Ingress validation: discovered IDs are stored verbatim and
+            // echoed in logs, routes, and /v1/models output. Enforce the same
+            // charset/length rules as client-supplied model names so junk or
+            // hostile strings can never enter the registry.
+            if let Err(reason) = validate_discovered_id(&api_model.id) {
+                warn!(
+                    "Skipping model with invalid id {:?}: {}",
+                    api_model.id, reason
+                );
+                continue;
+            }
+
             // Extract provider ID from Aperture metadata (no hardcoded plans!)
-            let provider_id = api_model
+            let raw_provider_id = api_model
                 .metadata
                 .as_ref()
                 .and_then(|m| m.provider.as_ref())
                 .and_then(|p| p.id.clone())
                 .unwrap_or_else(|| "default".to_string());
+
+            let provider_id = match validate_discovered_id(&raw_provider_id) {
+                Ok(()) => raw_provider_id,
+                Err(reason) => {
+                    warn!(
+                        "Replacing invalid provider id {:?} with 'default': {}",
+                        raw_provider_id, reason
+                    );
+                    "default".to_string()
+                }
+            };
 
             let model = Model {
                 id: api_model.id.clone(),
@@ -374,8 +468,9 @@ impl ModelDiscovery {
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
-            // Fire immediately on startup, don't wait for first interval
-            interval.tick().await;
+            // tokio::time::interval fires its first tick immediately, so the
+            // loop below performs the initial fetch on startup instead of
+            // waiting a full refresh interval.
 
             loop {
                 tokio::select! {
@@ -399,7 +494,7 @@ impl ModelDiscovery {
                                 }
                             }
                             Err(e) => {
-                                warn!("Failed to auto-refresh models: {}", e);
+                                warn!("Failed to auto-refresh models: {:?}", e);
                             }
                         }
                     }
@@ -407,4 +502,28 @@ impl ModelDiscovery {
             }
         })
     }
+}
+
+/// Validate a gateway-supplied model or provider ID before it enters the
+/// registry. Applies the same rules as client-facing `validate_model_name`:
+/// bounded length, safe charset, no path traversal — so hostile or junk
+/// strings can never reach logs, routes, or the public /v1/models output.
+fn validate_discovered_id(id: &str) -> Result<(), String> {
+    const MAX_ID_LEN: usize = 256;
+    if id.is_empty() {
+        return Err("empty id".to_string());
+    }
+    if id.len() > MAX_ID_LEN {
+        return Err(format!("id exceeds {} bytes", MAX_ID_LEN));
+    }
+    if id.contains("..") {
+        return Err("id contains path traversal sequence '..'".to_string());
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+    {
+        return Err("id contains characters outside [A-Za-z0-9-_./]".to_string());
+    }
+    Ok(())
 }

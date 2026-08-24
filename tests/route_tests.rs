@@ -1,35 +1,18 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 aperture-router contributors
 
+mod common;
+
+use common::{add_connect_info, add_connect_info_port, create_test_router};
+
 use axum::{
     body::Body,
-    extract::ConnectInfo,
     http::{Method, Request, StatusCode},
 };
 use http_body_util::BodyExt;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tower::ServiceExt;
 
-use aperture_router::{
-    config::Config,
-    discovery::models::ModelDiscovery,
-    server::{self, create_router},
-};
-
-fn create_test_router(config: Config, discovery: std::sync::Arc<ModelDiscovery>) -> axum::Router {
-    let server::RouterHandles { router, .. } = create_router(config, discovery);
-    router
-}
-
-/// Add ConnectInfo extension to a request for testing
-/// This simulates what the server does with into_make_service_with_connect_info
-fn add_connect_info<B>(mut request: Request<B>) -> Request<B> {
-    request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-        12345,
-    )));
-    request
-}
+use aperture_router::{config::Config, discovery::models::ModelDiscovery};
 
 #[cfg(test)]
 mod route_tests {
@@ -139,6 +122,128 @@ mod route_tests {
         let _app = create_test_router(config, std::sync::Arc::new(discovery));
 
         // Router created successfully if we reach here
+    }
+
+    #[tokio::test]
+    async fn test_body_limit_above_axum_default() {
+        // Regression: axum's built-in 2 MB DefaultBodyLimit used to reject
+        // bodies over 2 MB even when max_body_size_bytes was higher, so the
+        // configured limit never took effect for Json extractors.
+        let config = create_test_config();
+        assert_eq!(config.security.max_body_size_bytes, 10 * 1024 * 1024);
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        let big_content = "a".repeat(2_500_000);
+        let payload = format!(
+            r#"{{"model":"test-model","max_tokens":100,"messages":[{{"role":"user","content":"{big_content}"}}]}}"#
+        );
+
+        let request = Request::builder()
+            .uri("/v1/messages")
+            .method(Method::POST)
+            .header("content-type", "application/json")
+            .body(Body::from(payload))
+            .unwrap();
+
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
+        assert_ne!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "bodies under max_body_size_bytes must pass the body-limit layer"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_body_over_limit_rejected() {
+        let config = create_test_config();
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        let payload = "a".repeat(11 * 1024 * 1024);
+
+        let request = Request::builder()
+            .uri("/v1/messages")
+            .method(Method::POST)
+            .header("content-type", "application/json")
+            .body(Body::from(payload))
+            .unwrap();
+
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn test_body_limit_is_config_driven() {
+        // The regression this guards: the limit must come from
+        // security.max_body_size_bytes, not any hardcoded extractor default.
+        let mut config = create_test_config();
+        config.security.max_body_size_bytes = 1024;
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        let over = format!(
+            r#"{{"model":"m","max_tokens":10,"messages":[{{"role":"user","content":"{}"}}]}}"#,
+            "a".repeat(2048)
+        );
+        let request = Request::builder()
+            .uri("/v1/messages")
+            .method(Method::POST)
+            .header("content-type", "application/json")
+            .body(Body::from(over))
+            .unwrap();
+        let response = app
+            .clone()
+            .oneshot(add_connect_info(request))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "1.5KB body must be rejected when the configured limit is 1KB"
+        );
+
+        let under = r#"{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}"#;
+        let request = Request::builder()
+            .uri("/v1/messages")
+            .method(Method::POST)
+            .header("content-type", "application/json")
+            .body(Body::from(under))
+            .unwrap();
+        let response = app.oneshot(add_connect_info(request)).await.unwrap();
+        assert_ne!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "sub-limit body must pass the body-limit layer"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_body_limit_covers_all_post_routes() {
+        // Every JSON-ingesting route must sit behind the same configured cap.
+        for uri in ["/v1/chat/completions", "/v1/proxy"] {
+            let mut config = create_test_config();
+            config.security.max_body_size_bytes = 1024;
+            let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
+            let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+            let payload = format!(
+                r#"{{"model":"m","messages":[{{"role":"user","content":"{}"}}]}}"#,
+                "a".repeat(4096)
+            );
+            let request = Request::builder()
+                .uri(uri)
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .unwrap();
+            let response = app.oneshot(add_connect_info(request)).await.unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "{uri} must enforce the configured body limit"
+            );
+        }
     }
 
     #[tokio::test]
@@ -440,5 +545,74 @@ mod route_tests {
         // When no admin keys configured, admin endpoints return 401
         // (unless APERTURE_ALLOW_DEV_ADMIN=1 is set in dev mode)
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[cfg(test)]
+mod ratelimit_gap_tests {
+    use super::*;
+    fn config_with_limits(rps: u64, burst: u64, no_auth: bool) -> Config {
+        let mut config = Config::default();
+        config.rate_limit.requests_per_second = rps;
+        config.rate_limit.burst_size = burst;
+        config.security.require_auth_in_prod = no_auth;
+        config
+    }
+
+    async fn hit_chat(app: axum::Router, port: u16) -> StatusCode {
+        let request = Request::builder()
+            .uri("/v1/chat/completions")
+            .method(Method::POST)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":5}"#,
+            ))
+            .unwrap();
+        let request = add_connect_info_port(request, port);
+        app.oneshot(request).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn test_no_auth_deployment_still_rate_limits() {
+        // Auth disabled (no api_keys) + require_auth_in_prod=false:
+        // the route must still throttle per-IP instead of passing everything.
+        let config = config_with_limits(1000, 3, false);
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        let mut last = StatusCode::OK;
+        for _ in 0..5 {
+            last = hit_chat(app.clone(), 51001).await;
+        }
+        assert_eq!(
+            last,
+            StatusCode::TOO_MANY_REQUESTS,
+            "burst of 5 over limit 3 must end in 429 even with auth disabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_admin_endpoint_rate_limited() {
+        // Admin middleware must throttle per-IP before auth checking.
+        let mut config = config_with_limits(1000, 2, false);
+        config.security.admin_api_keys = vec!["admin-key-with-sufficient-entropy-1".to_string()];
+        let discovery = ModelDiscovery::new(config.aperture.clone(), &config.http).unwrap();
+        let app = create_test_router(config, std::sync::Arc::new(discovery));
+
+        let mut last = StatusCode::OK;
+        for _ in 0..4 {
+            let request = Request::builder()
+                .uri("/admin/stats")
+                .method(Method::GET)
+                .body(Body::empty())
+                .unwrap();
+            let request = add_connect_info_port(request, 51002);
+            last = app.clone().oneshot(request).await.unwrap().status();
+        }
+        assert_eq!(
+            last,
+            StatusCode::TOO_MANY_REQUESTS,
+            "admin burst of 4 over limit 2 must end in 429"
+        );
     }
 }

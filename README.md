@@ -54,9 +54,13 @@ With authentication:
 
 ```bash
 export APERTURE_BASE_URL=http://your-aperture-gateway:8080
-export APERTURE_API_KEY=your-api-key-here-at-least-32-characters
+export APERTURE_CLIENT_API_KEYS=your-client-key-here-at-least-32-characters
 aperture-router
 ```
+
+> `APERTURE_CLIENT_API_KEYS` sets the keys clients must present to this router.
+> If your Aperture gateway itself requires a key, set it with
+> `APERTURE_API_KEY` (upstream gateway key) or in the config file.
 
 ### Method 2: Generate Config
 
@@ -134,8 +138,9 @@ aperture-router config export --openclaw
 |----------|-------------|---------|
 | `APERTURE_BASE_URL` | Aperture gateway URL (required if no config) | `http://100.100.100.100:8080` |
 | `APERTURE_HOST` | Listen address | `0.0.0.0` |
-| `APERTURE_PORT` | Listen port | `8080` |
-| `APERTURE_API_KEY` | API key for authentication | `your-32-char-key-here` |
+| `APERTURE_PORT` | Listen port | `8765` |
+| `APERTURE_API_KEY` | Aperture gateway key (upstream; removed from env after load) | `your-32-char-key-here` |
+| `APERTURE_CLIENT_API_KEYS` | Comma-separated client auth keys for inbound requests | `apr_key1,apr_key2` |
 | `APERTURE_ALLOW_NO_AUTH` | Disable auth requirement (dev only) | `1` |
 | `RUST_LOG` | Logging level | `debug`, `info` |
 

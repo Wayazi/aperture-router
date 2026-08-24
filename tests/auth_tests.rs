@@ -307,6 +307,74 @@ mod auth_tests {
         assert_eq!(auth_state.ban_duration, Duration::from_secs(300));
     }
 
+    #[tokio::test]
+    async fn test_ban_persists_until_ban_duration_expires() {
+        let security_config = SecurityConfig {
+            api_keys: vec!["test-api-key-with-sufficient-entropy-32".to_string()],
+            admin_api_keys: Vec::new(),
+            max_body_size_bytes: 10 * 1024 * 1024,
+            max_auth_attempts: 3,
+            // Failure window shorter than the ban: failures age out of the
+            // window but the ban must persist for ban_duration_secs.
+            auth_window_secs: 1,
+            ban_duration_secs: 2,
+            require_auth_in_prod: true,
+            max_json_depth: 256,
+            max_streaming_size_bytes: 100 * 1024 * 1024,
+            max_messages: 10000,
+        };
+        let cors_config = CorsConfig::default();
+        let auth_state = AuthState::new(&security_config, &cors_config);
+        let ip: std::net::IpAddr = "192.168.77.7".parse().unwrap();
+
+        for _ in 0..3 {
+            auth_state.record_failure(ip).await.unwrap();
+        }
+        assert!(auth_state.is_banned(ip).await, "ban active immediately");
+
+        // Past the failure window (1s) but within the ban duration (2s):
+        // the ban must still hold even though recent_count drops to 0.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(
+            auth_state.is_banned(ip).await,
+            "ban must outlive the failure window"
+        );
+
+        // After ban_duration elapses from the last failure, the ban lifts.
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        assert!(
+            !auth_state.is_banned(ip).await,
+            "ban expires after ban_duration"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_below_threshold_never_bans() {
+        let security_config = SecurityConfig {
+            api_keys: vec!["test-api-key-with-sufficient-entropy-32".to_string()],
+            admin_api_keys: Vec::new(),
+            max_body_size_bytes: 10 * 1024 * 1024,
+            max_auth_attempts: 5,
+            auth_window_secs: 60,
+            ban_duration_secs: 300,
+            require_auth_in_prod: true,
+            max_json_depth: 256,
+            max_streaming_size_bytes: 100 * 1024 * 1024,
+            max_messages: 10000,
+        };
+        let cors_config = CorsConfig::default();
+        let auth_state = AuthState::new(&security_config, &cors_config);
+        let ip: std::net::IpAddr = "192.168.77.8".parse().unwrap();
+
+        for _ in 0..4 {
+            auth_state.record_failure(ip).await.unwrap();
+        }
+        assert!(
+            !auth_state.is_banned(ip).await,
+            "failures below max_attempts must not ban"
+        );
+    }
+
     // Admin key validation tests
     #[tokio::test]
     async fn test_validate_admin_key_valid() {

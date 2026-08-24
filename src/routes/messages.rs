@@ -40,8 +40,17 @@ impl HasModel for MessageRequest {
     }
 }
 
+/// A response builder can only fail on invalid status/header values, which
+/// this helper never produces — fall back to a builder-free 500 if it ever
+/// does instead of panicking on a request path.
+fn fallback_response() -> Response {
+    let mut resp = Response::new(Body::empty());
+    *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+    resp
+}
+
 fn anthropic_error(status: StatusCode, error_type: &str, message: &str) -> Response {
-    Response::builder()
+    match Response::builder()
         .status(status)
         .header("content-type", "application/json")
         .body(Body::from(
@@ -53,8 +62,13 @@ fn anthropic_error(status: StatusCode, error_type: &str, message: &str) -> Respo
                 }
             })
             .to_string(),
-        ))
-        .expect("failed to build error response")
+        )) {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("Response build failed ({}), returning bare 500", e);
+            fallback_response()
+        }
+    }
 }
 
 fn anthropic_server_error(status: StatusCode, message: &str) -> Response {
@@ -92,22 +106,7 @@ fn convert_openai_error_to_anthropic(openai_error_body: &str) -> String {
     .to_string()
 }
 
-fn safe_api_key<'a>(
-    provider: &'a crate::config::Provider,
-    default_key: Option<&'a String>,
-    gateway_url: &str,
-) -> Option<&'a str> {
-    if provider.api_key.is_some() {
-        return provider.api_key.as_deref();
-    }
-    if provider.base_url.trim_end_matches('/') == gateway_url.trim_end_matches('/') {
-        default_key.map(|s| s.as_str())
-    } else {
-        None
-    }
-}
-
-const MAX_FAILOVER_ATTEMPTS: usize = 3;
+use super::shared::{provider_api_key as safe_api_key, MAX_FAILOVER_ATTEMPTS, MAX_OTHER_FIELDS};
 
 async fn try_provider_non_streaming(
     state: &AppState,
@@ -139,19 +138,40 @@ async fn try_provider_non_streaming(
             }
 
             if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
+                let body = match crate::http_client::read_body_capped(
+                    response,
+                    crate::http_client::MAX_ERROR_BODY_BYTES,
+                    "Upstream error body",
+                )
+                .await
+                {
+                    Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                    Err(_) => String::new(),
+                };
                 let anthropic_err = convert_openai_error_to_anthropic(&body);
                 return Ok(Response::builder()
                     .status(status)
                     .header("content-type", "application/json")
                     .body(Body::from(anthropic_err))
-                    .expect("failed to build response"));
+                    .unwrap_or_else(|e| {
+                        error!("Response build failed ({}), returning bare 500", e);
+                        fallback_response()
+                    }));
             }
 
-            let body = response.text().await.map_err(|e| {
-                error!("Failed to read response body: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            let body = match crate::http_client::read_body_capped(
+                response,
+                crate::http_client::MAX_NON_STREAMING_RESPONSE_BYTES,
+                "Upstream response",
+            )
+            .await
+            {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(e) => {
+                    error!("Failed to read response body: {}", e);
+                    return Err(StatusCode::BAD_GATEWAY);
+                }
+            };
 
             let openai_response: Value = serde_json::from_str(&body).map_err(|e| {
                 error!("Failed to parse OpenAI response: {}", e);
@@ -168,7 +188,10 @@ async fn try_provider_non_streaming(
                 .status(StatusCode::OK)
                 .header("content-type", "application/json")
                 .body(Body::from(response_body))
-                .expect("failed to build response"))
+                .unwrap_or_else(|e| {
+                    error!("Response build failed ({}), returning bare 500", e);
+                    fallback_response()
+                }))
         }
         Err(e) => {
             warn!("Provider '{}' connection error: {}", provider.name, e);
@@ -237,7 +260,22 @@ async fn handle_non_streaming_conversion(
                         "Service temporarily unavailable",
                     );
                 }
-                let body = response.text().await.unwrap_or_default();
+                let body = match crate::http_client::read_body_capped(
+                    response,
+                    crate::http_client::MAX_NON_STREAMING_RESPONSE_BYTES,
+                    "Upstream response",
+                )
+                .await
+                {
+                    Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                    Err(e) => {
+                        error!("Failed to read upstream response body: {}", e);
+                        return anthropic_server_error(
+                            StatusCode::BAD_GATEWAY,
+                            "Upstream response too large",
+                        );
+                    }
+                };
                 match serde_json::from_str::<Value>(&body) {
                     Ok(openai_resp) => {
                         let anthropic_resp = openai_response_to_anthropic(&openai_resp);
@@ -246,7 +284,10 @@ async fn handle_non_streaming_conversion(
                             .status(StatusCode::OK)
                             .header("content-type", "application/json")
                             .body(Body::from(resp_body))
-                            .expect("failed to build response")
+                            .unwrap_or_else(|e| {
+                                error!("Response build failed ({}), returning bare 500", e);
+                                fallback_response()
+                            })
                     }
                     Err(_) => {
                         anthropic_server_error(StatusCode::BAD_GATEWAY, "Invalid upstream response")
@@ -382,7 +423,16 @@ fn build_anthropic_sse(
     let sse_stream = raw_stream.flat_map(move |chunk| {
         let events: Vec<Result<Event, Infallible>> = match chunk {
             Ok(data) => {
-                let mut conv = converter.lock().unwrap();
+                // Poisoned-lock recovery: a panic while holding the lock must
+                // not kill the whole stream — the converter state is still
+                // usable, so continue with the recovered guard.
+                let mut conv = match converter.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => {
+                        warn!("Converter mutex poisoned; recovering stream state");
+                        poisoned.into_inner()
+                    }
+                };
                 conv.convert_chunk(&data)
                     .into_iter()
                     .map(|sse_event| Ok(Event::from(sse_event)))
@@ -602,7 +652,6 @@ pub async fn anthropic_messages(
     }
 
     // Validate other HashMap size (prevent memory exhaustion)
-    const MAX_OTHER_FIELDS: usize = 50;
     if request.other.len() > MAX_OTHER_FIELDS {
         warn!("Too many extra fields: {}", request.other.len());
         return (

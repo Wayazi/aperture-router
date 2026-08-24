@@ -48,6 +48,37 @@ pub fn is_allowed_endpoint(endpoint: &str) -> bool {
     ALLOWED_ENDPOINTS.contains(&endpoint)
 }
 
+/// Cap for non-streaming upstream response bodies (10 MB, matches docs).
+pub const MAX_NON_STREAMING_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+
+/// Cap for upstream error bodies kept for logging/conversion (64 KiB).
+pub const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// Read a response body in bounded chunks, aborting past `max_bytes`.
+///
+/// Chunked or close-delimited responses have no Content-Length, so a post-hoc
+/// size check after `.text()`/`.bytes()` still buffers the entire body first.
+/// Reading chunk-by-chunk caps memory and drops the connection mid-body on
+/// overflow instead of re-reading the whole thing.
+pub async fn read_body_capped(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    context: &str,
+) -> anyhow::Result<Vec<u8>> {
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| anyhow::anyhow!("{context}: failed reading body: {e}"))?
+    {
+        if body.len() + chunk.len() > max_bytes {
+            anyhow::bail!("{context}: response exceeds {max_bytes} bytes");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

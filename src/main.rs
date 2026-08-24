@@ -179,14 +179,28 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
             let mut config = Config::default();
             config.aperture.base_url = base_url.clone();
 
-            // Check for API key in environment
+            // APERTURE_API_KEY is the upstream gateway key (same meaning as in
+            // the config-file path). Zeroize after read: prevents the key from
+            // being visible in /proc/[pid]/environ.
             if let Ok(key) = std::env::var("APERTURE_API_KEY") {
                 if !key.is_empty() {
-                    config.security.api_keys = vec![key];
+                    config.aperture.api_key = Some(key);
                 }
-                // Zeroize the environment variable after loading
-                // Prevents key from being visible in /proc/[pid]/environ
                 std::env::remove_var("APERTURE_API_KEY");
+            }
+
+            // Inbound client auth keys (comma-separated), replacing the old
+            // overloaded use of APERTURE_API_KEY for this purpose.
+            if let Ok(keys) = std::env::var("APERTURE_CLIENT_API_KEYS") {
+                let parsed: Vec<String> = keys
+                    .split(',')
+                    .map(|k| k.trim().to_string())
+                    .filter(|k| !k.is_empty())
+                    .collect();
+                if !parsed.is_empty() {
+                    config.security.api_keys = parsed;
+                }
+                std::env::remove_var("APERTURE_CLIENT_API_KEYS");
             }
 
             // Allow no auth
@@ -225,7 +239,7 @@ async fn run_server(config_path: &str) -> anyhow::Result<()> {
     // Check authentication status
     if config.security.require_auth_in_prod && config.security.api_keys.is_empty() {
         if !cfg!(debug_assertions) {
-            return Err(anyhow::anyhow!("Production mode requires authentication but no API keys configured. Set APERTURE_ALLOW_NO_AUTH=1 to override (not recommended)"));
+            return Err(anyhow::anyhow!("Production mode requires authentication but no API keys configured. Set security.api_keys in your config, set APERTURE_CLIENT_API_KEYS=key1,key2 in the environment, or set APERTURE_ALLOW_NO_AUTH=1 to override (not recommended)"));
         }
         info!("⚠️  WARNING: Running without authentication in production mode!");
     }

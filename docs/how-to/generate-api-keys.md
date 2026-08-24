@@ -73,15 +73,17 @@ Multiple keys are allowed in each list. Any key in `api_keys` grants regular acc
 
 ## Via environment variable
 
-For a single key without a config file:
+For env-only setups without a config file:
 
 ```bash
 export APERTURE_BASE_URL=http://100.100.100.100
-export APERTURE_API_KEY=apr_your-strong-key
+export APERTURE_CLIENT_API_KEYS=apr_your-strong-key
 aperture-router
 ```
 
-`APERTURE_API_KEY` populates `security.api_keys` (regular key only). It does **not** set an admin key. The variable is removed from the process environment after loading to prevent leakage via `/proc/[pid]/environ`.
+`APERTURE_CLIENT_API_KEYS` (comma-separated) populates `security.api_keys` (regular keys only; no admin keys). It is removed from the process environment after loading to prevent leakage via `/proc/[pid]/environ`.
+
+> Do **not** use `APERTURE_API_KEY` for client auth — that variable is the *upstream Aperture gateway* key (`aperture.api_key`).
 
 ## Distributing keys
 

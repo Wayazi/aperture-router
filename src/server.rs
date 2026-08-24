@@ -2,7 +2,7 @@
 // Copyright (c) 2026 aperture-router contributors
 
 use axum::{
-    extract::Request,
+    extract::{DefaultBodyLimit, Request},
     middleware::Next,
     response::Response,
     routing::{get, post},
@@ -257,7 +257,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> RouterHa
     let rate_limiter = crate::middleware::RateLimiter::new(
         config.rate_limit.burst_size as usize,
         std::time::Duration::from_secs(
-            config.rate_limit.burst_size / config.rate_limit.requests_per_second.max(1),
+            (config.rate_limit.burst_size / config.rate_limit.requests_per_second.max(1)).max(1),
         ),
     );
 
@@ -292,7 +292,11 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> RouterHa
         )
         .route("/admin/stats", get(crate::routes::admin::get_stats))
         .route_layer(axum::middleware::from_fn_with_state(
-            (Arc::clone(&shared_config), Arc::clone(&shared_auth_state)),
+            (
+                Arc::clone(&shared_config),
+                Arc::clone(&shared_auth_state),
+                rate_limiter.clone(),
+            ),
             crate::middleware::admin_auth_middleware,
         ))
         .with_state((*app_state).clone());
@@ -356,6 +360,7 @@ pub fn create_router(config: Config, discovery: Arc<ModelDiscovery>) -> RouterHa
             axum::http::HeaderName::from_static("permissions-policy"),
             axum::http::HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
         ))
+        .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(
             (config.security.max_body_size_bytes as u64)
                 .try_into()

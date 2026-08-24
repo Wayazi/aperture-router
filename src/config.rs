@@ -99,11 +99,12 @@ pub struct RateLimitConfig {
     #[serde(default = "default_burst_size")]
     pub burst_size: u64,
 
-    /// Health endpoint requests per second (separate limit)
+    /// Deprecated: /health is intentionally unthrottled. The field is still
+    /// parsed so existing configs keep loading, but it has no effect.
     #[serde(default = "default_health_rate_limit")]
     pub health_requests_per_second: u64,
 
-    /// Health endpoint burst size
+    /// Deprecated: see health_requests_per_second.
     #[serde(default = "default_health_burst_size")]
     pub health_burst_size: u64,
 }
@@ -509,12 +510,13 @@ impl Config {
             return Err("Rate limit burst size cannot be 0".to_string());
         }
 
-        if self.rate_limit.health_requests_per_second == 0 {
-            return Err("Health rate limit requests per second cannot be 0".to_string());
-        }
-
-        if self.rate_limit.health_burst_size == 0 {
-            return Err("Health rate limit burst size cannot be 0".to_string());
+        // Deprecated knobs: accepted so old configs keep loading, never applied.
+        if self.rate_limit.health_requests_per_second != default_health_rate_limit()
+            || self.rate_limit.health_burst_size != default_health_burst_size()
+        {
+            tracing::warn!(
+                "rate_limit.health_requests_per_second / health_burst_size are deprecated and ignored; /health is unthrottled by design"
+            );
         }
 
         // Validate authentication limits
@@ -582,7 +584,7 @@ impl Config {
             && self.security.api_keys.is_empty()
             && !cfg!(debug_assertions)
         {
-            return Err("Production mode requires authentication but no API keys configured. Set APERTURE_ALLOW_NO_AUTH=1 to override (not recommended)".to_string());
+            return Err("Production mode requires authentication but no API keys configured. Set security.api_keys in your config, set APERTURE_CLIENT_API_KEYS=key1,key2 in the environment, or set APERTURE_ALLOW_NO_AUTH=1 to override (not recommended)".to_string());
         }
 
         // Validate providers
