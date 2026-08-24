@@ -42,6 +42,9 @@ const MAX_CONTENT_SIZE: usize = 1024 * 1024;
 
 /// Handle streaming proxy requests with true SSE streaming
 /// Supports both OpenAI and Anthropic formats, including tool/function calling and extended thinking
+// Response<Body> exceeds clippy's result_large_err threshold on current stable;
+// matching the established precedent in routes/proxy.rs.
+#[allow(clippy::result_large_err)]
 pub async fn handle_proxy_stream(
     State(state): State<AppState>,
     Json(mut request): Json<Value>,
