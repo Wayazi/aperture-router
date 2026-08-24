@@ -107,6 +107,17 @@ pub fn is_internal_ip_strict_host(host: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// CGNAT range check (100.64.0.0/10) — the range Tailscale assigns addresses from
+pub fn is_cgnat(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 100 && (64..=127).contains(&o[1])
+        }
+        IpAddr::V6(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
