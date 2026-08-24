@@ -5,7 +5,7 @@ All notable changes to aperture-router will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.3] - 2026-08-24
 
 ### Fixed
 - **Axum's built-in 2 MB body limit silently capped requests** - `security.max_body_size_bytes` was enforced via a tower-http layer, but axum's extractors also apply their own hardcoded 2 MB `DefaultBodyLimit`. Any `/v1/messages` request over 2 MB — typical once base64 screenshots accumulate in Claude Code sessions — was rejected with `413` long before the configured limit, and clients showed misleading errors (e.g. Claude Code's "Request too large (max 32MB)" for any 413 from a custom gateway). The built-in default is now disabled so the configured limit is the single source of truth.
