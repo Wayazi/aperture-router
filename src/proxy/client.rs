@@ -119,14 +119,29 @@ impl ProxyClient {
         // - Localhost development
         // - Deployments without API keys (using other auth methods)
         let has_api_key = aperture_config.api_key.is_some();
-        let is_tailscale = aperture_config.base_url.contains("100.100.")
-            || aperture_config.base_url.contains(".tsnet.");
 
         // Allow HTTP for localhost (development/testing) - any port
         // Use proper URL parsing to detect all localhost forms (IPv6 [::1], 127.x, etc.)
         let host_str = Url::parse(&aperture_config.base_url)
             .ok()
             .and_then(|u| u.host_str().map(|h| h.to_string()));
+
+        // Tailscale assigns addresses from the whole CGNAT range 100.64.0.0/10,
+        // so detect it by parsing the host IP rather than substring matching.
+        // MagicDNS names end in ".ts.net" — check the parsed HOST as a suffix,
+        // not the raw URL: a contains()-style check never matches real hosts
+        // ("ts.net" is followed by end-of-string, ':' or '/') and instead
+        // whitelists lookalike domains like evil.ts.net.attacker.com.
+        let is_tailscale = host_str
+            .as_deref()
+            .map(|host| {
+                host.parse::<IpAddr>()
+                    .map(|ip| crate::security::is_cgnat(&ip))
+                    .unwrap_or(false)
+                    || host.ends_with(".ts.net")
+                    || host.ends_with(".tsnet")
+            })
+            .unwrap_or(false);
 
         let is_localhost = host_str
             .as_deref()

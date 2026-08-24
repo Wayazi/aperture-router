@@ -6,6 +6,7 @@ use http::StatusCode;
 use tracing::{debug, warn};
 
 use crate::{
+    config::EndpointStyle,
     routes::{
         proxy::{proxy_handler_multi, HasModel},
         shared::MAX_OTHER_FIELDS,
@@ -165,10 +166,46 @@ pub async fn chat_completions(
 
     debug!("Valid model: {}", request.model);
 
-    let providers = state
+    // This route speaks OpenAI format. Anthropic-style providers expect a
+    // /v1/messages body, which we cannot synthesize here — exclude them so the
+    // request fails over to OpenAI-style providers or the default gateway
+    // instead of being posted verbatim to their messages endpoint.
+    let providers: Vec<_> = state
         .provider_registry
         .get_providers_for_model(&request.model)
-        .await;
+        .await
+        .into_iter()
+        .filter(|p| p.endpoint_style != EndpointStyle::Anthropic)
+        .collect();
+
+    if providers.is_empty()
+        && state.config.multi_provider_enabled
+        && state
+            .provider_registry
+            .get_providers_for_model(&request.model)
+            .await
+            .iter()
+            .any(|p| p.endpoint_style == EndpointStyle::Anthropic)
+    {
+        warn!(
+            "Model '{}' is only served by Anthropic-style providers; use /v1/messages for it",
+            request.model
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({
+                "error": {
+                    "message": format!(
+                        "Model '{}' is served by an Anthropic-style provider; send requests to /v1/messages",
+                        request.model
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "wrong_endpoint_for_provider"
+                }
+            })),
+        )
+            .into_response();
+    }
 
     proxy_handler_multi(
         state.proxy_client,
