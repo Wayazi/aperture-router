@@ -22,6 +22,10 @@ connect_timeout_secs = 10
 request_timeout_secs = 300
 # SSE keep-alive interval in seconds
 sse_keep_alive_secs = 15
+# Extra attempts after an upstream 429 before surfacing the error (max 5)
+upstream_retry_attempts = 2
+# Base delay in ms for the first 429 retry; doubles each attempt with jitter (max 10000)
+upstream_retry_base_delay_ms = 2000
 
 [cors]
 # Allowed origins for CORS (use "*" for wildcard development only - NOT FOR PRODUCTION)

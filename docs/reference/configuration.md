@@ -60,8 +60,16 @@ Loaded after the config file; override the corresponding fields.
 | `connect_timeout_secs` | u64 | `10` | — |
 | `request_timeout_secs` | u64 | `300` | — |
 | `sse_keep_alive_secs` | u64 | `15` | — |
+| `upstream_retry_attempts` | u32 | `2` | ≤ 5 |
+| `upstream_retry_base_delay_ms` | u64 (ms) | `2000` | > 0, ≤ 10 000 |
 
 The HTTP client (`src/http_client.rs`) also enforces: `pool_max_idle_per_host = 5`, `pool_idle_timeout = 60s`, redirects disabled (`Policy::none`, SSRF protection).
+
+**Upstream 429 retries:** when an upstream answers `429 Too Many Requests` (typical of
+shared model pools), the router waits and retries before surfacing the error. Attempt *n*
+waits `base_delay × 2ⁿ × jitter(0.7–1.3)`; a server `Retry-After` header overrides the
+computed delay, capped at 4× base delay. With defaults the worst added latency is ~6 s.
+Set `upstream_retry_attempts = 0` to disable and pass 429s through immediately.
 
 ## `[cors]`
 

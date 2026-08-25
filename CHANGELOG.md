@@ -5,6 +5,11 @@ All notable changes to aperture-router will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Upstream 429 retry with exponential backoff** - When an upstream provider (e.g. a shared free-tier model pool) answers `429 Too Many Requests`, the router now retries internally — 2 extra attempts by default, doubling the delay each time with jitter (2s → 4s ± 30%), honoring a server `Retry-After` header when present — before surfacing the error. This absorbs short shared-pool saturation windows so clients like Claude Code never see them and their own zero-gap retry loops stay dormant; sustained saturation still surfaces honestly after retries are exhausted. Configurable via `[http] upstream_retry_attempts` (0–5) and `upstream_retry_base_delay_ms` (≤10 000).
+
 ## [0.3.3] - 2026-08-24
 
 ### Fixed

@@ -49,6 +49,14 @@ pub struct HttpConfig {
     /// SSE keep-alive interval in seconds
     #[serde(default = "default_sse_keep_alive")]
     pub sse_keep_alive_secs: u64,
+
+    /// Extra attempts after an upstream 429 before surfacing the error
+    #[serde(default = "default_upstream_retry_attempts")]
+    pub upstream_retry_attempts: u32,
+
+    /// Base delay for the first 429 retry; doubles each attempt (with jitter)
+    #[serde(default = "default_upstream_retry_base_delay_ms")]
+    pub upstream_retry_base_delay_ms: u64,
 }
 
 fn default_connect_timeout() -> u64 {
@@ -61,6 +69,14 @@ fn default_request_timeout() -> u64 {
 
 fn default_sse_keep_alive() -> u64 {
     15
+}
+
+fn default_upstream_retry_attempts() -> u32 {
+    2
+}
+
+fn default_upstream_retry_base_delay_ms() -> u64 {
+    2000
 }
 
 /// CORS configuration
@@ -323,6 +339,8 @@ impl Default for HttpConfig {
             connect_timeout_secs: default_connect_timeout(),
             request_timeout_secs: default_request_timeout(),
             sse_keep_alive_secs: default_sse_keep_alive(),
+            upstream_retry_attempts: default_upstream_retry_attempts(),
+            upstream_retry_base_delay_ms: default_upstream_retry_base_delay_ms(),
         }
     }
 }
@@ -577,6 +595,17 @@ impl Config {
         // Validate max messages limit
         if self.security.max_messages == 0 {
             return Err("Max messages cannot be 0".to_string());
+        }
+
+        // Validate upstream 429 retry settings
+        if self.http.upstream_retry_attempts > 5 {
+            return Err("Upstream retry attempts cannot exceed 5".to_string());
+        }
+        if self.http.upstream_retry_base_delay_ms == 0 {
+            return Err("Upstream retry base delay cannot be 0".to_string());
+        }
+        if self.http.upstream_retry_base_delay_ms > 10_000 {
+            return Err("Upstream retry base delay cannot exceed 10000ms".to_string());
         }
 
         // Production safety check - only enforce in release builds (production)

@@ -105,6 +105,8 @@ pub struct ProxyClient {
     aperture_config: ApertureConfig,
     max_streaming_size_bytes: usize,
     request_timeout: Duration,
+    retry_attempts: u32,
+    retry_base_delay: Duration,
 }
 
 impl ProxyClient {
@@ -179,7 +181,57 @@ impl ProxyClient {
             aperture_config,
             max_streaming_size_bytes,
             request_timeout,
+            retry_attempts: http_config.upstream_retry_attempts,
+            retry_base_delay: Duration::from_millis(http_config.upstream_retry_base_delay_ms),
         })
+    }
+
+    /// Send a request builder, retrying upstream 429s with exponential backoff.
+    ///
+    /// `build_request` must produce a FRESH builder on every call because
+    /// `.body()` consumes it. The shared Stealth pool saturates in bursts;
+    /// short windows are absorbed here (2s, 4s, + jitter) so clients never
+    /// see them and their own aggressive retry loops stay dormant. A
+    /// server-supplied `Retry-After` header overrides the computed delay
+    /// (capped at 4x base delay). Non-429 failures return immediately.
+    async fn send_with_429_retry(
+        &self,
+        mut build_request: impl FnMut() -> reqwest::RequestBuilder,
+        context: &str,
+    ) -> anyhow::Result<reqwest::Response> {
+        for attempt in 0..=self.retry_attempts {
+            let response = build_request().send().await?;
+
+            if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
+                || attempt == self.retry_attempts
+            {
+                return Ok(response);
+            }
+
+            let delay = match response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+            {
+                Some(secs) => Duration::from_secs(secs.min(self.retry_base_delay.as_secs() * 4)),
+                None => {
+                    let jitter = rand_factor();
+                    self.retry_base_delay
+                        .mul_f64(jitter * (1u32 << attempt) as f64)
+                }
+            };
+
+            warn!(
+                "Upstream 429 from {} — retry {}/{} in {:?}",
+                context,
+                attempt + 1,
+                self.retry_attempts,
+                delay
+            );
+            tokio::time::sleep(delay).await;
+        }
+        unreachable!("retry loop returns inside the loop")
     }
 
     /// Forward a request to Aperture
@@ -193,17 +245,21 @@ impl ProxyClient {
         debug!("Forwarding request to {}", parsed_url);
         info!("Proxying to: {}", endpoint);
 
-        let mut request = self
-            .client
-            .post(parsed_url)
-            .header("Content-Type", "application/json");
-
-        // Add API key if configured
-        if let Some(ref api_key) = self.aperture_config.api_key {
-            request = request.header("x-api-key", api_key);
-        }
-
-        let response = request.body(body).send().await?;
+        let response = self
+            .send_with_429_retry(
+                || {
+                    let mut request = self
+                        .client
+                        .post(parsed_url.clone())
+                        .header("Content-Type", "application/json");
+                    if let Some(ref api_key) = self.aperture_config.api_key {
+                        request = request.header("x-api-key", api_key);
+                    }
+                    request.body(body.clone())
+                },
+                endpoint,
+            )
+            .await?;
 
         // Return error for non-success status codes
         if !response.status().is_success() {
@@ -231,17 +287,21 @@ impl ProxyClient {
         debug!("Forwarding streaming request to {}", parsed_url);
         info!("Proxying streaming to: {}", endpoint);
 
-        let mut request = self
-            .client
-            .post(parsed_url)
-            .header("Content-Type", "application/json");
-
-        // Add API key if configured
-        if let Some(ref api_key) = self.aperture_config.api_key {
-            request = request.header("x-api-key", api_key);
-        }
-
-        let response = request.body(body).send().await?;
+        let response = self
+            .send_with_429_retry(
+                || {
+                    let mut request = self
+                        .client
+                        .post(parsed_url.clone())
+                        .header("Content-Type", "application/json");
+                    if let Some(ref api_key) = self.aperture_config.api_key {
+                        request = request.header("x-api-key", api_key);
+                    }
+                    request.body(body.clone())
+                },
+                endpoint,
+            )
+            .await?;
 
         // Check for non-success status codes
         if !response.status().is_success() {
@@ -305,16 +365,21 @@ impl ProxyClient {
 
         debug!("Forwarding request to custom URL: {}", url);
 
-        let mut request = self
-            .client
-            .post(url)
-            .header("Content-Type", "application/json");
-
-        if let Some(key) = api_key {
-            request = add_auth_header(request, key, endpoint_style);
-        }
-
-        let response = request.body(body).send().await?;
+        let response = self
+            .send_with_429_retry(
+                || {
+                    let mut request = self
+                        .client
+                        .post(url)
+                        .header("Content-Type", "application/json");
+                    if let Some(key) = api_key {
+                        request = add_auth_header(request, key, endpoint_style);
+                    }
+                    request.body(body.clone())
+                },
+                url,
+            )
+            .await?;
 
         // Return error for non-success status codes
         if !response.status().is_success() {
@@ -351,16 +416,21 @@ impl ProxyClient {
 
         debug!("Forwarding request to custom URL (raw): {}", url);
 
-        let mut request = self
-            .client
-            .post(url)
-            .header("Content-Type", "application/json");
-
-        if let Some(key) = api_key {
-            request = add_auth_header(request, key, endpoint_style);
-        }
-
-        let response = request.body(body).send().await?;
+        let response = self
+            .send_with_429_retry(
+                || {
+                    let mut request = self
+                        .client
+                        .post(url)
+                        .header("Content-Type", "application/json");
+                    if let Some(key) = api_key {
+                        request = add_auth_header(request, key, endpoint_style);
+                    }
+                    request.body(body.clone())
+                },
+                url,
+            )
+            .await?;
 
         Ok(response)
     }
@@ -384,19 +454,25 @@ impl ProxyClient {
 
         debug!("Forwarding streaming request to custom URL: {}", url);
 
-        let mut request = self
-            .client
-            .post(url)
-            .header("Content-Type", "application/json");
-
-        if let Some(key) = api_key {
-            request = add_auth_header(request, key, endpoint_style);
-        }
-
         let request_timeout = self.request_timeout;
-        let response = tokio::time::timeout(request_timeout, request.body(body).send())
-            .await
-            .map_err(|_| anyhow::anyhow!("Streaming request to {} timed out", url))??;
+        let response = tokio::time::timeout(
+            request_timeout,
+            self.send_with_429_retry(
+                || {
+                    let mut request = self
+                        .client
+                        .post(url)
+                        .header("Content-Type", "application/json");
+                    if let Some(key) = api_key {
+                        request = add_auth_header(request, key, endpoint_style);
+                    }
+                    request.body(body.clone())
+                },
+                url,
+            ),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Streaming request to {} timed out", url))??;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -586,6 +662,17 @@ async fn validate_resolved_ips(host: &str, port: u16) -> anyhow::Result<()> {
     }
 }
 
+/// Jitter multiplier for 429 backoff: uniform 0.7–1.3 so parallel sessions
+/// desynchronize instead of retrying in lockstep. Deterministic fallback when
+/// no system entropy is available.
+fn rand_factor() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .map(|n| 0.7 + (f64::from(n % 1000) / 1000.0) * 0.6)
+        .unwrap_or(1.0)
+}
+
 /// SSRF host validation shared by all provider-forwarding paths.
 ///
 /// Blocks cloud metadata hosts, internal/loopback IP literals (CGN 100.64.0.0/10
@@ -709,6 +796,7 @@ mod tests {
             connect_timeout_secs: 10,
             request_timeout_secs: 300,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
         assert!(ProxyClient::new(config, http_config, 1024).is_ok());
     }
@@ -724,6 +812,7 @@ mod tests {
             connect_timeout_secs: 10,
             request_timeout_secs: 300,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
         assert!(ProxyClient::new(config, http_config, 1024).is_ok());
     }
@@ -739,6 +828,7 @@ mod tests {
             connect_timeout_secs: 10,
             request_timeout_secs: 300,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
         assert!(ProxyClient::new(config, http_config, 1024).is_err());
     }

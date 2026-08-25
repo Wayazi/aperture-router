@@ -23,6 +23,7 @@ mod proxy_tests {
             connect_timeout_secs: 10,
             request_timeout_secs: 300,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
 
         let client = ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024);
@@ -44,6 +45,7 @@ mod proxy_tests {
             connect_timeout_secs: 10,
             request_timeout_secs: 300,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
 
         let client = ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024);
@@ -83,6 +85,7 @@ mod proxy_tests {
             connect_timeout_secs: 10,
             request_timeout_secs: 300,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
 
         let proxy_client =
@@ -135,6 +138,7 @@ mod proxy_tests {
             connect_timeout_secs: 10,
             request_timeout_secs: 300,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
 
         let proxy_client =
@@ -178,6 +182,7 @@ mod proxy_tests {
             connect_timeout_secs: 10,
             request_timeout_secs: 300,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
 
         let proxy_client =
@@ -220,6 +225,7 @@ mod proxy_tests {
             connect_timeout_secs: 10,
             request_timeout_secs: 300,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
 
         let proxy_client =
@@ -249,6 +255,7 @@ mod proxy_tests {
             connect_timeout_secs: 10,
             request_timeout_secs: 300,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
 
         let proxy_client =
@@ -269,6 +276,7 @@ mod proxy_tests {
             connect_timeout_secs: 5,
             request_timeout_secs: 120,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
 
         let client = ProxyClient::new(aperture_config, http_config, 100 * 1024 * 1024);
@@ -304,6 +312,8 @@ mod proxy_tests {
             connect_timeout_secs: 10,
             request_timeout_secs: 300,
             sse_keep_alive_secs: 15,
+            upstream_retry_attempts: 0,
+            ..Default::default()
         };
 
         let proxy_client =
@@ -321,6 +331,136 @@ mod proxy_tests {
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("Service temporarily unavailable"));
+    }
+
+    #[tokio::test]
+    async fn test_429_retried_until_success() {
+        let mock_server = MockServer::start().await;
+
+        // First two requests hit a dedicated 429 mock (expect: 2), then an
+        // unmounted-fallback 200. wiremock dispatches in insertion order.
+        let rate_limited = wiremock::Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(2)
+            .mount_as_scoped(&mock_server)
+            .await;
+        wiremock::Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let aperture_config = ApertureConfig {
+            base_url: mock_server.uri(),
+            api_key: None,
+            model_refresh_interval_secs: 300,
+        };
+        // Tiny base delay keeps the test fast while still exercising both
+        // backoff sleeps (attempt 0 and attempt 1).
+        let http_config = HttpConfig {
+            connect_timeout_secs: 10,
+            request_timeout_secs: 300,
+            sse_keep_alive_secs: 15,
+            upstream_retry_attempts: 2,
+            upstream_retry_base_delay_ms: 20,
+        };
+        let proxy_client = ProxyClient::new(aperture_config, http_config, 1024 * 1024).unwrap();
+
+        let response = proxy_client
+            .forward_request(
+                "v1/chat/completions",
+                serde_json::to_vec(&serde_json::json!({"model": "m"})).unwrap(),
+            )
+            .await
+            .expect("third attempt must succeed after two 429s");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            rate_limited.received_requests().await.len(),
+            2,
+            "exactly two 429s served"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_429_exhaustion_surfaces_error() {
+        let mock_server = MockServer::start().await;
+        let always_429 = wiremock::Mock::given(method("POST"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount_as_scoped(&mock_server)
+            .await;
+
+        let aperture_config = ApertureConfig {
+            base_url: mock_server.uri(),
+            api_key: None,
+            model_refresh_interval_secs: 300,
+        };
+        // attempts=1 → exactly 2 sends; delay tiny to keep runtime low
+        let http_config = HttpConfig {
+            connect_timeout_secs: 10,
+            request_timeout_secs: 300,
+            sse_keep_alive_secs: 15,
+            upstream_retry_attempts: 1,
+            upstream_retry_base_delay_ms: 10,
+        };
+        let proxy_client = ProxyClient::new(aperture_config, http_config, 1024 * 1024).unwrap();
+
+        let result = proxy_client
+            .forward_request("v1/models", b"{}".to_vec())
+            .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Service temporarily unavailable"));
+        assert_eq!(
+            always_429.received_requests().await.len(),
+            2,
+            "initial send + 1 retry = 2 total sends"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_500_not_retried() {
+        let mock_server = MockServer::start().await;
+        let err_500 = wiremock::Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount_as_scoped(&mock_server)
+            .await;
+
+        let aperture_config = ApertureConfig {
+            base_url: mock_server.uri(),
+            api_key: None,
+            model_refresh_interval_secs: 300,
+        };
+        // Retries enabled — proves non-429 bypasses the retry loop.
+        let http_config = HttpConfig {
+            connect_timeout_secs: 10,
+            request_timeout_secs: 300,
+            sse_keep_alive_secs: 15,
+            upstream_retry_attempts: 3,
+            upstream_retry_base_delay_ms: 2000,
+        };
+        let proxy_client = ProxyClient::new(aperture_config, http_config, 1024 * 1024).unwrap();
+
+        let start = std::time::Instant::now();
+        let result = proxy_client
+            .forward_request(
+                "v1/chat/completions",
+                serde_json::to_vec(&serde_json::json!({"model": "m"})).unwrap(),
+            )
+            .await;
+        assert!(start.elapsed() < std::time::Duration::from_millis(1500));
+        assert!(result.is_err());
+        assert_eq!(
+            err_500.received_requests().await.len(),
+            1,
+            "single send, zero retries"
+        );
     }
 
     #[tokio::test]
@@ -346,6 +486,7 @@ mod proxy_tests {
             connect_timeout_secs: 10,
             request_timeout_secs: 300,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
 
         let proxy_client =
@@ -376,6 +517,7 @@ mod proxy_tests {
             connect_timeout_secs: 1, // Short timeout
             request_timeout_secs: 1,
             sse_keep_alive_secs: 15,
+            ..Default::default()
         };
 
         let proxy_client =
