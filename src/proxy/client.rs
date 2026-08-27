@@ -202,9 +202,27 @@ impl ProxyClient {
         for attempt in 0..=self.retry_attempts {
             let response = build_request().send().await?;
 
-            if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
-                || attempt == self.retry_attempts
-            {
+            let is_429 = response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS;
+            if !is_429 || attempt == self.retry_attempts {
+                return Ok(response);
+            }
+
+            // A zero remaining-quota header means a hard quota wall (e.g.
+            // openrouter free-tier daily cap), not a transient burst. Backoff
+            // cannot help until the window resets — surface immediately
+            // instead of stalling every request by the full retry budget.
+            let quota_exhausted = response
+                .headers()
+                .get("x-ratelimit-remaining")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.trim() == "0")
+                .unwrap_or(false);
+            if quota_exhausted {
+                warn!(
+                    "Upstream 429 from {} has x-ratelimit-remaining: 0 — quota exhausted, \
+                     failing fast without retries",
+                    context
+                );
                 return Ok(response);
             }
 
@@ -214,7 +232,17 @@ impl ProxyClient {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.trim().parse::<u64>().ok())
             {
-                Some(secs) => Duration::from_secs(secs.min(self.retry_base_delay.as_secs() * 4)),
+                // Cap in whole milliseconds: deriving from as_secs() truncates
+                // sub-second base delays to a zero-length cap, silently
+                // discarding the server's Retry-After hint entirely.
+                Some(secs) => {
+                    let cap = Duration::from_millis(
+                        u64::try_from(self.retry_base_delay.as_millis())
+                            .unwrap_or(u64::MAX)
+                            .saturating_mul(4),
+                    );
+                    Duration::from_secs(secs).min(cap)
+                }
                 None => {
                     let jitter = rand_factor();
                     self.retry_base_delay

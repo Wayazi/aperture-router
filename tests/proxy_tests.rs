@@ -424,6 +424,48 @@ mod proxy_tests {
     }
 
     #[tokio::test]
+    async fn test_429_quota_exhausted_fails_fast() {
+        let mock_server = MockServer::start().await;
+        // Daily-cap style 429: x-ratelimit-remaining: 0 means backoff cannot
+        // help until the window resets — the router must send exactly once.
+        let quota_429 = wiremock::Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).insert_header("x-ratelimit-remaining", "0"))
+            .mount_as_scoped(&mock_server)
+            .await;
+
+        let aperture_config = ApertureConfig {
+            base_url: mock_server.uri(),
+            api_key: None,
+            model_refresh_interval_secs: 300,
+        };
+        // Retries enabled — proves the exhausted-quota header bypasses them.
+        let http_config = HttpConfig {
+            connect_timeout_secs: 10,
+            request_timeout_secs: 300,
+            sse_keep_alive_secs: 15,
+            upstream_retry_attempts: 3,
+            upstream_retry_base_delay_ms: 2000,
+        };
+        let proxy_client = ProxyClient::new(aperture_config, http_config, 1024 * 1024).unwrap();
+
+        let start = std::time::Instant::now();
+        let result = proxy_client
+            .forward_request(
+                "v1/chat/completions",
+                serde_json::to_vec(&serde_json::json!({"model": "m"})).unwrap(),
+            )
+            .await;
+        assert!(start.elapsed() < std::time::Duration::from_millis(1500));
+        assert!(result.is_err());
+        assert_eq!(
+            quota_429.received_requests().await.len(),
+            1,
+            "quota-exhausted 429 must fail fast with a single send"
+        );
+    }
+
+    #[tokio::test]
     async fn test_500_not_retried() {
         let mock_server = MockServer::start().await;
         let err_500 = wiremock::Mock::given(method("POST"))
@@ -460,6 +502,204 @@ mod proxy_tests {
             err_500.received_requests().await.len(),
             1,
             "single send, zero retries"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_429_retry_after_capped_at_4x_base_delay() {
+        let mock_server = MockServer::start().await;
+        // Server demands an absurd 3600s wait. The router must cap it at
+        // 4x base delay (4 x 20ms = 80ms) and succeed quickly; without the
+        // cap this test would hang for the full hour.
+        let rate_limited = wiremock::Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "3600"))
+            .up_to_n_times(1)
+            .mount_as_scoped(&mock_server)
+            .await;
+        wiremock::Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&mock_server)
+            .await;
+
+        let aperture_config = ApertureConfig {
+            base_url: mock_server.uri(),
+            api_key: None,
+            model_refresh_interval_secs: 300,
+        };
+        let http_config = HttpConfig {
+            connect_timeout_secs: 10,
+            request_timeout_secs: 300,
+            sse_keep_alive_secs: 15,
+            upstream_retry_attempts: 2,
+            upstream_retry_base_delay_ms: 20,
+        };
+        let proxy_client = ProxyClient::new(aperture_config, http_config, 1024 * 1024).unwrap();
+
+        let start = std::time::Instant::now();
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            proxy_client.forward_request(
+                "v1/chat/completions",
+                serde_json::to_vec(&serde_json::json!({"model": "m"})).unwrap(),
+            ),
+        )
+        .await
+        .expect("capped Retry-After must not stall the retry loop")
+        .expect("retry after capped wait must succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        // Capped delay is ~80ms (+ jitter-free header path); the uncapped
+        // 3600s would blow far past this bound.
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(2000),
+            "Retry-After cap did not apply — slept {:?}",
+            start.elapsed()
+        );
+        assert_eq!(rate_limited.received_requests().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_429_retry_after_overrides_computed_delay() {
+        let mock_server = MockServer::start().await;
+        // Server says wait exactly 1s. Computed backoff with base=500ms would
+        // be ~350-650ms (jitter 0.7-1.3); elapsed >= 900ms proves the server
+        // instruction won over the computed delay, while staying under the
+        // 4x-base cap (2s) that guards against absurd values.
+        let rate_limited = wiremock::Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+            .up_to_n_times(1)
+            .mount_as_scoped(&mock_server)
+            .await;
+        wiremock::Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&mock_server)
+            .await;
+
+        let aperture_config = ApertureConfig {
+            base_url: mock_server.uri(),
+            api_key: None,
+            model_refresh_interval_secs: 300,
+        };
+        let http_config = HttpConfig {
+            connect_timeout_secs: 10,
+            request_timeout_secs: 300,
+            sse_keep_alive_secs: 15,
+            upstream_retry_attempts: 2,
+            upstream_retry_base_delay_ms: 500,
+        };
+        let proxy_client = ProxyClient::new(aperture_config, http_config, 1024 * 1024).unwrap();
+
+        let start = std::time::Instant::now();
+        let response = proxy_client
+            .forward_request(
+                "v1/chat/completions",
+                serde_json::to_vec(&serde_json::json!({"model": "m"})).unwrap(),
+            )
+            .await
+            .expect("retry after server-specified 1s wait must succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            start.elapsed() >= std::time::Duration::from_millis(900),
+            "Retry-After override did not apply — only slept {:?}",
+            start.elapsed()
+        );
+        assert_eq!(rate_limited.received_requests().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_429_retried_on_streaming_path() {
+        let mock_server = MockServer::start().await;
+        let rate_limited = wiremock::Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(2)
+            .mount_as_scoped(&mock_server)
+            .await;
+        wiremock::Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_raw("data: {\"chunk\": 1}\n\n", "text/event-stream"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let aperture_config = ApertureConfig {
+            base_url: mock_server.uri(),
+            api_key: None,
+            model_refresh_interval_secs: 300,
+        };
+        let http_config = HttpConfig {
+            connect_timeout_secs: 10,
+            request_timeout_secs: 300,
+            sse_keep_alive_secs: 15,
+            upstream_retry_attempts: 2,
+            upstream_retry_base_delay_ms: 20,
+        };
+        let proxy_client = ProxyClient::new(aperture_config, http_config, 1024 * 1024).unwrap();
+
+        use futures::StreamExt;
+        let mut stream = proxy_client
+            .forward_request_stream(
+                "v1/chat/completions",
+                serde_json::to_vec(&serde_json::json!({"model": "m"})).unwrap(),
+            )
+            .await
+            .expect("streaming forward must succeed after two 429s");
+        let mut chunks = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            chunks.push(chunk.expect("stream chunk must parse"));
+        }
+        assert!(!chunks.is_empty(), "SSE body must yield at least one chunk");
+        assert_eq!(
+            rate_limited.received_requests().await.len(),
+            2,
+            "exactly two 429s served on the streaming path"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_429_exhausted_on_streaming_to_url_returns_err_for_failover() {
+        // Multi-provider streaming path uses forward_request_stream_to_url,
+        // which must return Err (not an error stream) on a non-success status
+        // so the try_provider_streaming failover loop can try the next provider.
+        use aperture_router::config::EndpointStyle;
+        let mock_server = MockServer::start().await;
+        let _always_429 = wiremock::Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&mock_server)
+            .await;
+
+        let aperture_config = ApertureConfig {
+            base_url: mock_server.uri(),
+            api_key: None,
+            model_refresh_interval_secs: 300,
+        };
+        let http_config = HttpConfig {
+            connect_timeout_secs: 10,
+            request_timeout_secs: 300,
+            sse_keep_alive_secs: 15,
+            upstream_retry_attempts: 1, // exactly 2 sends: initial + 1 retry
+            upstream_retry_base_delay_ms: 10,
+        };
+        let proxy_client = ProxyClient::new(aperture_config, http_config, 1024 * 1024).unwrap();
+
+        let result = proxy_client
+            .forward_request_stream_to_url(
+                &format!("{}/v1/chat/completions", mock_server.uri()),
+                b"{}".to_vec(),
+                None,
+                EndpointStyle::OpenaiV1,
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "exhausted 429 on multi-provider streaming must surface as Err to enable failover"
         );
     }
 

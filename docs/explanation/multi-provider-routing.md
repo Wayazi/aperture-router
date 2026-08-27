@@ -88,8 +88,9 @@ Aperture populates. The discovery layer groups models by provider ID.
 ### Retry with Backoff
 
 `fetch_models` (`src/discovery/models.rs:111`) retries up to 3 times on server errors (5xx)
-and connection failures, with exponential backoff (2s, 4s). 4xx errors fail immediately
-(configuration problem, not transient). This was added in v0.3.1.
+and connection failures, with exponential backoff (2s, 4s). Other 4xx errors (including 429,
+which the proxy paths absorb via `[http] upstream_retry_*` but discovery does not) fail
+immediately (configuration problem, not transient). This was added in v0.3.1.
 
 The discovery HTTP client sends the `x-api-key` header to Aperture when
 `aperture.api_key` is configured, so authenticated gateways return the full model list.
@@ -140,22 +141,29 @@ the same pattern:
 
 ## Failover
 
-`try_provider` (`src/routes/proxy.rs:110`) attempts one provider:
+`try_provider` (`src/routes/proxy.rs:117`) attempts **one provider on the non-streaming path** (multi-provider streaming uses the separate `try_provider_streaming` at `src/routes/messages.rs:203`):
 
 1. Build the URL via `build_provider_url`.
 2. Resolve the API key: if the provider has its own key, use it; otherwise, if the provider's
    base URL matches the Aperture gateway URL, use the default gateway key; otherwise, no key.
-3. Call `forward_request_to_url_raw` (no streaming) or `forward_request_stream_to_url`
-   (streaming).
+3. Call `forward_request_to_url_raw` (non-streaming). The streaming variant is
+   `forward_request_stream_to_url` and is called from `try_provider_streaming`, not here.
 4. **On 5xx server error** → return `Err(status)`, signaling the caller to try the next
    provider.
-5. **On 4xx client error** → return the error response directly (the request was bad, not
-   the provider — retrying won't help).
-6. **On connection error** → return `Err(502)`, try next provider.
+5. **On 429** → retried internally first (per `[http] upstream_retry_*`). If the retries are
+   exhausted, the 429 is returned to the client directly (non-streaming path does NOT
+   treat an exhausted 429 as a failover signal — it returns the error response).
+6. **On other 4xx client errors** → return the error response directly (the request was bad,
+   not the provider — retrying won't help).
+7. **On connection error** → return `Err(502)`, try next provider.
 
-The key insight: failover only happens on **server-side failures** (5xx, connection errors).
-A 400 Bad Request from the first provider is returned to the client immediately, because
-retrying the same invalid request against another provider would produce the same error.
+The key insight: failover only happens on **server-side failures** (5xx, connection
+errors). A 400 Bad Request from the first provider is returned to the client immediately,
+because retrying the same invalid request against another provider would produce the same
+error. An exhausted 429 is first absorbed by the router's internal upstream-429 retry loop
+(see [configuration](../reference/configuration.md)); on the non-streaming path it is
+returned to the client as a 429, while on the multi-provider streaming path it triggers
+failover to the next provider (see [Streaming Failover](#streaming-failover) below).
 
 `MAX_FAILOVER_ATTEMPTS = 3` caps the failover chain to prevent unbounded latency. If all
 attempts fail, the last error status is returned with `"All providers failed"`.

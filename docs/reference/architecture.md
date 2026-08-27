@@ -150,10 +150,19 @@ provider_registry.get_providers_for_model(model)
   └── >1 providers → failover loop (max 3 attempts)
                       ├── Provider A → 5xx/conn error → try next
                       ├── Provider B → 5xx/conn error → try next
-                      └── Provider C → success or 4xx (terminal)
+                      └── Provider C → success or 4xx (4xx other than 429 is terminal)
 ```
 
-4xx errors are terminal (no retry). Only 5xx and connection errors trigger failover.
+4xx errors other than 429 are terminal. `429 Too Many Requests` is retried internally
+per `[http] upstream_retry_*` (see [configuration](configuration.md)) before being
+surfaced. Once retries are exhausted: non-streaming paths return the 429 to the client.
+On the **multi-provider streaming path** (`try_provider_streaming` → `forward_request_stream_to_url`)
+the exhausted 429 is reported as `Err` and the failover loop tries the next provider;
+on the **default-gateway streaming path** (`forward_request_stream`) the exhausted 429
+is degraded to a single error chunk in the SSE stream and is NOT a failover trigger
+(the failover loop never sees it). So 5xx, connection errors, and exhausted 429s all
+trigger failover on multi-provider streaming routes; only 5xx and connection errors
+do on the default-gateway streaming path.
 
 ## Anthropic Streaming Paths
 

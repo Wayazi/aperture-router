@@ -17,11 +17,10 @@ pub fn validate_model_name(name: &str) -> Result<(), String> {
         return Err("Model name cannot contain '..'".to_string());
     }
 
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/')
-    {
-        return Err("Model name contains invalid characters. Only ASCII alphanumeric, '-', '_', '.', and '/' are allowed".to_string());
+    if !name.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/' || c == ':'
+    }) {
+        return Err("Model name contains invalid characters. Only ASCII alphanumeric, '-', '_', '.', '/', and ':' are allowed".to_string());
     }
 
     Ok(())

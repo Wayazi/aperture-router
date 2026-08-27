@@ -521,9 +521,9 @@ fn validate_discovered_id(id: &str) -> Result<(), String> {
     }
     if !id
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':'))
     {
-        return Err("id contains characters outside [A-Za-z0-9-_./]".to_string());
+        return Err("id contains characters outside [A-Za-z0-9-_./:]".to_string());
     }
     Ok(())
 }

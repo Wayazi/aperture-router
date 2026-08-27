@@ -245,7 +245,7 @@ max_messages = 50000
 - Empty string
 - Longer than 128 characters
 - Contains `..` (path traversal)
-- Contains characters other than `a-z A-Z 0-9 - _ . /`
+- Contains characters other than `a-z A-Z 0-9 - _ . / :`
 
 **Fix:** Use a valid model identifier.
 

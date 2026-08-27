@@ -13,6 +13,15 @@ fn test_validate_model_name_valid() {
     assert!(validate_model_name("provider/model").is_ok());
     assert!(validate_model_name("model_v2").is_ok());
     assert!(validate_model_name("a").is_ok());
+    assert!(validate_model_name("minimax/minimax-m3:free").is_ok());
+    assert!(validate_model_name("deepseek/deepseek-r1:extended").is_ok());
+}
+
+#[test]
+fn test_validate_model_name_colon() {
+    assert!(validate_model_name("model:free").is_ok());
+    assert!(validate_model_name(":leading").is_ok());
+    assert!(validate_model_name("trailing:").is_ok());
 }
 
 #[test]

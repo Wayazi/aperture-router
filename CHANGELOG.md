@@ -8,7 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Upstream 429 retry with exponential backoff** - When an upstream provider (e.g. a shared free-tier model pool) answers `429 Too Many Requests`, the router now retries internally — 2 extra attempts by default, doubling the delay each time with jitter (2s → 4s ± 30%), honoring a server `Retry-After` header when present — before surfacing the error. This absorbs short shared-pool saturation windows so clients like Claude Code never see them and their own zero-gap retry loops stay dormant; sustained saturation still surfaces honestly after retries are exhausted. Configurable via `[http] upstream_retry_attempts` (0–5) and `upstream_retry_base_delay_ms` (≤10 000).
+- **Upstream 429 retry with exponential backoff** - When an upstream provider (e.g. a shared free-tier model pool) answers `429 Too Many Requests`, the router now retries internally — 2 extra attempts by default, doubling the delay each time with jitter (2s → 4s ± 30%), honoring a server `Retry-After` header when present — before surfacing the error. This absorbs short shared-pool saturation windows so clients like Claude Code never see them and their own zero-gap retry loops stay dormant; sustained saturation still surfaces honestly after retries are exhausted. **Quota-exhaustion carveout:** if a 429 response carries `x-ratelimit-remaining: 0` (e.g. an OpenRouter daily cap), the retry loop short-circuits immediately — backing off a hard quota wall with exponential delay would only delay the error. Configurable via `[http] upstream_retry_attempts` (0–5) and `upstream_retry_base_delay_ms` (≤10 000).
+
+### Fixed
+- **Model names with `:` were rejected** - OpenRouter-style ids such as `minimax/minimax-m3:free` failed validation (`400 invalid characters`) because the allowed charset was `[A-Za-z0-9-_./]`. `:` is now permitted in both the inbound model-name validator and the discovery id validator, so colon-suffixed variants (`:free`, `:extended`, `:nitro`) route correctly.
+- **Retry-After cap collapsed for sub-second base delays** - The cap applied to a server-supplied `Retry-After` header was computed as `base_delay.as_secs() * 4`, which truncates to 0 ms when `upstream_retry_base_delay_ms < 1000`, silently discarding the server's wait instruction. The cap is now derived from the full millisecond value (`as_millis() * 4`).
 
 ## [0.3.3] - 2026-08-24
 

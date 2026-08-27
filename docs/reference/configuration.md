@@ -67,8 +67,14 @@ The HTTP client (`src/http_client.rs`) also enforces: `pool_max_idle_per_host = 
 
 **Upstream 429 retries:** when an upstream answers `429 Too Many Requests` (typical of
 shared model pools), the router waits and retries before surfacing the error. Attempt *n*
-waits `base_delay × 2ⁿ × jitter(0.7–1.3)`; a server `Retry-After` header overrides the
-computed delay, capped at 4× base delay. With defaults the worst added latency is ~6 s.
+(0-based) waits `base_delay × 2ⁿ × jitter(0.7–1.3)`; a server `Retry-After` header overrides
+the computed delay, capped at 4× base delay. With defaults the backoff sleeps add roughly
+4.2–7.8 s (≈6 s on average) on top of the retried upstream requests, and a server
+`Retry-After` can push each wait up to 8 s (4× the default base).
+
+**Quota-exhaustion carveout:** if a 429 response carries `x-ratelimit-remaining: 0`, the
+retry loop short-circuits immediately — exponential backoff would only delay a hard
+quota wall (e.g. an OpenRouter daily cap) that retries cannot drain.
 Set `upstream_retry_attempts = 0` to disable and pass 429s through immediately.
 
 ## `[cors]`
@@ -167,7 +173,7 @@ Multi-provider routing bypasses this list (provider URLs are constructed from `b
 
 ## Validation order
 
-`Config::validate()` (`src/config.rs:425`) checks, in order:
+`Config::validate()` (`src/config.rs`) checks, in order:
 
 1. `port != 0`
 2. `aperture.base_url` non-empty
@@ -181,5 +187,7 @@ Multi-provider routing bypasses this list (provider URLs are constructed from `b
 10. `max_json_depth` in `16..=4096`
 11. `max_streaming_size_bytes` in `1..=1GB`
 12. `max_messages > 0`
-13. Production auth requirement (release builds only)
-14. Each provider: unique name, non-empty base_url/models, valid scheme, not internal/metadata IP
+13. `http.upstream_retry_attempts` ≤ 5
+14. `http.upstream_retry_base_delay_ms` > 0 and ≤ 10 000
+15. Production auth requirement (release builds only)
+16. Each provider: unique name, non-empty base_url/models, valid scheme, not internal/metadata IP

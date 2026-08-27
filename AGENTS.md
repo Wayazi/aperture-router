@@ -4,13 +4,13 @@ Context file for AI agents (Claude Code, OpenCode, Cursor, Copilot) working on t
 
 ## Project Overview
 
-**aperture-router** is a lightweight Rust proxy that lets any OpenAI/Anthropic-compatible AI tool use models behind a Tailscale Aperture gateway. It handles format conversion (Anthropic↔OpenAI), dynamic model discovery, multi-provider failover, and SSE streaming.
+**aperture-router** is a lightweight Rust proxy that lets any OpenAI/Anthropic-compatible AI tool use models behind a Tailscale Aperture gateway. It handles format conversion (Anthropic↔OpenAI), dynamic model discovery, multi-provider failover, SSE streaming, and upstream 429 retry with exponential backoff.
 
 - **Language:** Rust 2021 edition
 - **Framework:** Axum 0.8
 - **Runtime:** Tokio (multi-thread)
 - **TLS:** rustls (single backend, no OpenSSL)
-- **Version:** 0.3.2
+- **Version:** 0.3.3 (with 429-retry unreleased; see CHANGELOG [Unreleased])
 - **Binary size:** ~6.5 MB (stripped)
 - **RSS:** ~4.2 MB idle
 
