@@ -25,6 +25,19 @@ dev     ← Development branch (integration)
 - **Triggers**: CI tests only
 - **Stability**: May contain unstable features
 
+## Remotes
+
+| Remote | URL | Purpose |
+|--------|-----|---------|
+| `github` | `https://github.com/Wayazi/aperture-router.git` | Source hosting, CI, releases and tags |
+| `origin` | `ssh://aur@aur.archlinux.org/aperture-router.git` | AUR package repository |
+
+`origin` is the **AUR remote**, not GitHub — `git push origin master` publishes the package. The AUR package lives on the local `master` branch: checkout it, copy the final `PKGBUILD`, `.SRCINFO`, and `aperture-router.install` from `aur/`, commit, and push.
+
+### Re-release tags (`vX.Y.Z-rN`)
+
+When code changes after a release but before the next version bump, cut a re-release tag `vX.Y.Z-rN` (`-r2`, `-r3`, …) on the release commit and bump the AUR `pkgrel` to match (tag `-rN` → `pkgrel = N`). The AUR `source` array must point at the matching `vX.Y.Z-rN` tarball — never at `vX.Y.Z` itself, since the original release may be tombstoned on GitHub and its tag URL removed.
+
 ## Workflow
 
 ### Daily Development
@@ -41,7 +54,7 @@ git add .
 git commit -m "feat: add your feature"
 
 # Push to GitHub
-git push origin feature/your-feature-name
+git push github feature/your-feature-name
 
 # Create pull request to dev
 # (via GitHub web interface)
@@ -52,7 +65,7 @@ git push origin feature/your-feature-name
 ```bash
 # 1. Ensure dev is stable
 git checkout dev
-git pull origin dev
+git pull github dev
 
 # 2. Run tests
 cargo test --all
@@ -65,9 +78,9 @@ git merge dev
 git tag -a v0.1.0 -m "Release v0.1.0"
 
 # 5. Push both branches and tags
-git push origin main
-git push origin dev
-git push origin v0.1.0
+git push github main
+git push github dev
+git push github v0.1.0
 ```
 
 ## Pull Request Process
@@ -77,10 +90,10 @@ git push origin v0.1.0
 ```bash
 # From feature branch
 git checkout dev
-git pull origin dev
+git pull github dev
 git checkout feature/your-feature
 git rebase dev
-git push origin feature/your-feature
+git push github feature/your-feature
 ```
 
 Then create PR on GitHub: `feature/your-feature` → `dev`
@@ -90,13 +103,13 @@ Then create PR on GitHub: `feature/your-feature` → `dev`
 ```bash
 # Only maintainers do this
 git checkout main
-git pull origin main
+git pull github main
 git checkout dev
-git pull origin dev
+git pull github dev
 git checkout main
 git merge dev --no-ff -m "Release v0.1.0"
 git tag -a v0.1.0 -m "Release v0.1.0"
-git push origin main --tags
+git push github main --tags
 ```
 
 ## Commit Message Convention
@@ -169,7 +182,7 @@ git checkout dev
 git merge hotfix/critical-fix
 
 # Push everything
-git push origin main dev --tags
+git push github main dev --tags
 ```
 
 ## Branch Protection Rules (Recommended)
@@ -208,7 +221,7 @@ git commit
 
 ```bash
 # Update your branch
-git pull origin dev --rebase
+git pull github dev --rebase
 ```
 
 ### Accidentally commit to main
@@ -238,7 +251,7 @@ git log --oneline --graph --all
 git diff dev..main
 
 # See unpushed commits
-git log origin/dev..dev
+git log github/dev..dev
 ```
 
 ## GitHub Setup
@@ -255,9 +268,9 @@ git log origin/dev..dev
 ### 2. Push to GitHub
 
 ```bash
-git remote add origin https://github.com/Wayazi/aperture-router.git
-git push -u origin main
-git push -u origin dev
+git remote add github https://github.com/Wayazi/aperture-router.git
+git push -u github main
+git push -u github dev
 ```
 
 ### 3. Set Default Branch

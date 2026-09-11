@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Model names with `:` were rejected** - OpenRouter-style ids such as `minimax/minimax-m3:free` failed validation (`400 invalid characters`) because the allowed charset was `[A-Za-z0-9-_./]`. `:` is now permitted in both the inbound model-name validator and the discovery id validator, so colon-suffixed variants (`:free`, `:extended`, `:nitro`) route correctly.
 - **Retry-After cap collapsed for sub-second base delays** - The cap applied to a server-supplied `Retry-After` header was computed as `base_delay.as_secs() * 4`, which truncates to 0 ms when `upstream_retry_base_delay_ms < 1000`, silently discarding the server's wait instruction. The cap is now derived from the full millisecond value (`as_millis() * 4`).
 
+### Changed
+- **Smarter OpenCode export model selection** - `config export --opencode` now picks the primary model from capable non-free models first (falling back to any non-flash/haiku model) and `small_model` from free variants first (`:free` / `openrouter/free`, falling back to flash/haiku), instead of using the first non-flash model for both roles. The no-match fallback also follows discovery order instead of HashMap iteration order.
+
 ## [0.3.3] - 2026-08-24
 
 ### Fixed
@@ -256,7 +259,8 @@ aperture-router --debug
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-[Unreleased]: https://github.com/Wayazi/aperture-router/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/Wayazi/aperture-router/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/Wayazi/aperture-router/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Wayazi/aperture-router/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Wayazi/aperture-router/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Wayazi/aperture-router/compare/v0.2.0...v0.3.0

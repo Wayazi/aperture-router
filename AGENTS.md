@@ -26,7 +26,7 @@ cargo build --release
 # Build with wizard feature
 cargo build --features wizard
 
-# Run tests (230 tests)
+# Run tests (283 tests: 118 unit + 165 integration)
 cargo test
 
 # Lint
@@ -86,7 +86,7 @@ dev     ← Development integration (direct commits allowed)
 
 ```
 src/           Source code (11 modules)
-tests/         Integration tests (7 files, 230 tests total)
+tests/         Integration tests (8 files, 165 tests; 118 more in src unit tests)
 docs/          Documentation (Diátaxis framework)
 contrib/       Systemd service files
 aur/           AUR package (PKGBUILD, .SRCINFO)
