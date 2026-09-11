@@ -50,10 +50,17 @@ impl OpenCodeConfig {
     /// Create OpenCode config from router config and enriched models
     /// No hardcoded plans - uses actual model names from Aperture
     pub fn from_router_config(
-        _config: &Config,
+        config: &Config,
         models: &[EnrichedModel],
         router_url: &str,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
+        if models.is_empty() {
+            anyhow::bail!(
+                "No models discovered from Aperture — cannot build OpenCode config. \
+                 Check the gateway URL and that models are available."
+            );
+        }
+
         let mut models_map: HashMap<String, OpenCodeModel> = HashMap::new();
         let mut primary_model = String::new();
         let mut small_model = String::new();
@@ -121,6 +128,15 @@ impl OpenCodeConfig {
             small_model = primary_model.clone();
         }
 
+        // Prefer a configured client key so the generated config works as-is;
+        // the caller writes the file with 0600 permissions.
+        let api_key = config
+            .security
+            .api_keys
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "-".to_string());
+
         let mut providers = HashMap::new();
         providers.insert(
             "router".to_string(),
@@ -129,18 +145,18 @@ impl OpenCodeConfig {
                 npm: "@ai-sdk/anthropic".to_string(),
                 models: models_map,
                 options: OpenCodeOptions {
-                    api_key: "-".to_string(), // Router handles auth
+                    api_key,
                     base_url: format!("{}/v1", router_url.trim_end_matches('/')),
                 },
             },
         );
 
-        Self {
+        Ok(Self {
             schema: "https://opencode.ai/config.json".to_string(),
             model: primary_model,
             small_model,
             provider: providers,
-        }
+        })
     }
 
     /// Export to JSON string
@@ -238,7 +254,7 @@ mod tests {
         ];
 
         let opencode =
-            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765").unwrap();
 
         assert!(opencode.model.starts_with("router/"));
         assert!(opencode.provider.contains_key("router"));
@@ -259,7 +275,7 @@ mod tests {
         let models = vec![create_test_model("GLM-5", "glm")];
 
         let opencode =
-            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765").unwrap();
         let json = opencode.to_json().unwrap();
 
         assert!(json.contains("\"router\""));
@@ -276,7 +292,7 @@ mod tests {
         ];
 
         let opencode =
-            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765").unwrap();
 
         assert_eq!(opencode.model, "router/glm-5.3");
     }
@@ -290,7 +306,7 @@ mod tests {
         ];
 
         let opencode =
-            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765").unwrap();
 
         assert_eq!(opencode.model, "router/minimax/minimax-m3:free");
     }
@@ -305,7 +321,7 @@ mod tests {
         ];
 
         let opencode =
-            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765").unwrap();
 
         assert_eq!(opencode.model, "router/glm-5.3");
         assert_eq!(
@@ -323,7 +339,7 @@ mod tests {
         ];
 
         let opencode =
-            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765").unwrap();
 
         assert_eq!(opencode.small_model, "router/glm-5.3-flash");
     }
@@ -337,22 +353,45 @@ mod tests {
         ];
 
         let opencode =
-            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765").unwrap();
 
         assert_eq!(opencode.model, "router/openrouter/free");
         assert_eq!(opencode.small_model, "router/openrouter/free");
     }
 
     #[test]
-    fn test_no_models_leaves_selection_empty() {
+    fn test_no_models_errors() {
         let config = Config::default();
         let models: Vec<EnrichedModel> = Vec::new();
 
-        let opencode =
-            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+        let result = OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
 
-        assert_eq!(opencode.model, "");
-        assert_eq!(opencode.small_model, "");
-        assert!(opencode.provider["router"].models.is_empty());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_uses_configured_client_key() {
+        let mut config = Config::default();
+        config.security.api_keys = vec!["apr_test_client_key_0123456789abcdef".to_string()];
+        let models = vec![create_test_model("glm-5.3", "glm")];
+
+        let opencode =
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765").unwrap();
+
+        assert_eq!(
+            opencode.provider["router"].options.api_key,
+            "apr_test_client_key_0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn test_placeholder_key_when_no_client_keys() {
+        let config = Config::default();
+        let models = vec![create_test_model("glm-5.3", "glm")];
+
+        let opencode =
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765").unwrap();
+
+        assert_eq!(opencode.provider["router"].options.api_key, "-");
     }
 }

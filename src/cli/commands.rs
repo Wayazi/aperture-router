@@ -316,7 +316,7 @@ pub async fn export_config(
         // Fetch models to get metadata
         let models = fetch_models(&config.aperture.base_url).await?;
 
-        let opencode = OpenCodeConfig::from_router_config(&config, &models, router_url);
+        let opencode = OpenCodeConfig::from_router_config(&config, &models, router_url)?;
 
         let path = output_path
             .clone()

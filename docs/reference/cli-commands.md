@@ -151,7 +151,7 @@ aperture-router config export --opencode -o ~/.config/opencode/opencode.json
 
 `--opencode` and `--openclaw` fetch live models from Aperture and merge with an existing file at the output path (if present). Symlinks are refused. Output files are set to mode `0600`.
 
-`--opencode` selects the primary model from capable non-free models first (falling back to any non-flash/haiku model) and `small_model` (used for sub-agents) from free variants first (`:free` / `openrouter/free`, falling back to flash/haiku models).
+`--opencode` selects the primary model from capable non-free models first (falling back to any non-flash/haiku model) and `small_model` (used for sub-agents) from free variants first (`:free` / `openrouter/free`, falling back to flash/haiku models). The generated `apiKey` is pre-filled with the first configured client key (`security.api_keys`), or `-` when no client auth is configured. The export fails with a clear error if Aperture reports no models.
 
 ### `config validate`
 
