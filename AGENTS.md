@@ -10,7 +10,7 @@ Context file for AI agents (Claude Code, OpenCode, Cursor, Copilot) working on t
 - **Framework:** Axum 0.8
 - **Runtime:** Tokio (multi-thread)
 - **TLS:** rustls (single backend, no OpenSSL)
-- **Version:** 0.3.3 (with 429-retry unreleased; see CHANGELOG [Unreleased])
+- **Version:** 0.3.4
 - **Binary size:** ~6.5 MB (stripped)
 - **RSS:** ~4.2 MB idle
 
@@ -26,7 +26,7 @@ cargo build --release
 # Build with wizard feature
 cargo build --features wizard
 
-# Run tests (283 tests: 118 unit + 165 integration)
+# Run tests (285 tests: 120 unit + 165 integration)
 cargo test
 
 # Lint
@@ -86,7 +86,7 @@ dev     ← Development integration (direct commits allowed)
 
 ```
 src/           Source code (11 modules)
-tests/         Integration tests (8 files, 165 tests; 118 more in src unit tests)
+tests/         Integration tests (8 files, 165 tests; 120 more in src unit tests)
 docs/          Documentation (Diátaxis framework)
 contrib/       Systemd service files
 aur/           AUR package (PKGBUILD, .SRCINFO)
