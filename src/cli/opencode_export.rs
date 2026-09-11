@@ -68,26 +68,53 @@ impl OpenCodeConfig {
                     name: format!("{} [{}]", model.id, model.provider_id),
                 },
             );
+        }
 
-            // Heuristic: first non-flash model becomes primary
+        // Primary model: prefer capable non-free model (e.g. GLM-5.3, glm-5.2)
+        // Pass 1: non-free, non-flash/haiku (strongest paid)
+        for model in models {
             if primary_model.is_empty()
                 && !model.id.contains("flash")
                 && !model.id.contains("haiku")
+                && !model.id.contains(":free")
+                && model.id != "openrouter/free"
             {
-                primary_model = format!("router/{}", model_id);
+                primary_model = format!("router/{}", model.id);
+                break;
             }
-
-            // Heuristic: first flash/haiku model becomes small
-            if small_model.is_empty() && (model.id.contains("flash") || model.id.contains("haiku"))
-            {
-                small_model = format!("router/{}", model_id);
+        }
+        // Pass 2: any non-flash/haiku
+        if primary_model.is_empty() {
+            for model in models {
+                if !model.id.contains("flash") && !model.id.contains("haiku") {
+                    primary_model = format!("router/{}", model.id);
+                    break;
+                }
             }
         }
 
-        // Fallback if no models found
+        // Small model for sub-agents: prefer free models to save cost
+        // Pass 1: free models (:free or openrouter/free)
+        for model in models {
+            if model.id.contains(":free") || model.id == "openrouter/free" {
+                small_model = format!("router/{}", model.id);
+                break;
+            }
+        }
+        // Pass 2: flash/haiku (fast cheap)
+        if small_model.is_empty() {
+            for model in models {
+                if model.id.contains("flash") || model.id.contains("haiku") {
+                    small_model = format!("router/{}", model.id);
+                    break;
+                }
+            }
+        }
+
+        // Fallback: first model in discovery order (deterministic, unlike HashMap keys)
         if primary_model.is_empty() {
-            if let Some(first_model) = models_map.keys().next() {
-                primary_model = format!("router/{}", first_model);
+            if let Some(first_model) = models.first() {
+                primary_model = format!("router/{}", first_model.id);
             }
         }
         if small_model.is_empty() {
@@ -237,5 +264,95 @@ mod tests {
 
         assert!(json.contains("\"router\""));
         assert!(json.contains("\"baseURL\""));
+    }
+
+    #[test]
+    fn test_primary_prefers_paid_non_flash() {
+        let config = Config::default();
+        let models = vec![
+            create_test_model("minimax/minimax-m3:free", "openrouter2"),
+            create_test_model("glm-5.3-flash", "glm"),
+            create_test_model("glm-5.3", "glm"),
+        ];
+
+        let opencode =
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+
+        assert_eq!(opencode.model, "router/glm-5.3");
+    }
+
+    #[test]
+    fn test_primary_falls_back_to_any_non_flash() {
+        let config = Config::default();
+        let models = vec![
+            create_test_model("claude-haiku", "anthropic"),
+            create_test_model("minimax/minimax-m3:free", "openrouter2"),
+        ];
+
+        let opencode =
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+
+        assert_eq!(opencode.model, "router/minimax/minimax-m3:free");
+    }
+
+    #[test]
+    fn test_small_prefers_free_model() {
+        let config = Config::default();
+        let models = vec![
+            create_test_model("glm-5.3", "glm"),
+            create_test_model("glm-5.3-flash", "glm"),
+            create_test_model("inclusionai/ling-3.0-flash-fin:free", "openrouter2"),
+        ];
+
+        let opencode =
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+
+        assert_eq!(opencode.model, "router/glm-5.3");
+        assert_eq!(
+            opencode.small_model,
+            "router/inclusionai/ling-3.0-flash-fin:free"
+        );
+    }
+
+    #[test]
+    fn test_small_falls_back_to_flash() {
+        let config = Config::default();
+        let models = vec![
+            create_test_model("glm-5.3", "glm"),
+            create_test_model("glm-5.3-flash", "glm"),
+        ];
+
+        let opencode =
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+
+        assert_eq!(opencode.small_model, "router/glm-5.3-flash");
+    }
+
+    #[test]
+    fn test_all_free_models_share_selection() {
+        let config = Config::default();
+        let models = vec![
+            create_test_model("openrouter/free", "openrouter2"),
+            create_test_model("minimax/minimax-m3:free", "openrouter2"),
+        ];
+
+        let opencode =
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+
+        assert_eq!(opencode.model, "router/openrouter/free");
+        assert_eq!(opencode.small_model, "router/openrouter/free");
+    }
+
+    #[test]
+    fn test_no_models_leaves_selection_empty() {
+        let config = Config::default();
+        let models: Vec<EnrichedModel> = Vec::new();
+
+        let opencode =
+            OpenCodeConfig::from_router_config(&config, &models, "http://127.0.0.1:8765");
+
+        assert_eq!(opencode.model, "");
+        assert_eq!(opencode.small_model, "");
+        assert!(opencode.provider["router"].models.is_empty());
     }
 }
