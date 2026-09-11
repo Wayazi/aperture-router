@@ -1,7 +1,7 @@
 # Maintainer: Wayazi <https://github.com/Wayazi>
 pkgname=aperture-router
-pkgver=0.3.2
-pkgrel=1
+pkgver=0.3.3
+pkgrel=3
 pkgdesc="Universal AI router for Tailscale Aperture with dynamic model discovery"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Wayazi/aperture-router"
@@ -11,26 +11,33 @@ depends=('gcc-libs')
 makedepends=('cargo' 'nasm')
 install="$pkgname.install"
 backup=('etc/sysconfig/aperture-router')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('f4c6c66daa6fdf10b2ed9fd946dd85eb16137554111465957acd47b5d49ed25d')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v0.3.3-r4.tar.gz")
+sha256sums=('f119cad5fbbf1489ed7a5723bc0ae5a45f50221b8deaa48f4f8c4df771a5b593')
+
+_prepare_dir() {
+  cd "$srcdir/aperture-router-0.3.3-r4"
+}
 
 prepare() {
-  cd "$pkgname-$pkgver"
+  _prepare_dir
+  unset CARGO_TARGET_DIR
   cargo fetch
 }
 
 build() {
-  cd "$pkgname-$pkgver"
+  _prepare_dir
+  unset CARGO_TARGET_DIR
   cargo build --release --features wizard
 }
 
 check() {
-  cd "$pkgname-$pkgver"
+  _prepare_dir
+  unset CARGO_TARGET_DIR
   cargo test --release --features wizard
 }
 
 package() {
-  cd "$pkgname-$pkgver"
+  _prepare_dir
 
   # Binary
   install -Dm755 "target/release/aperture-router" "$pkgdir/usr/bin/aperture-router"
