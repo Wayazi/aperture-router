@@ -42,7 +42,7 @@ feat: add support for tool calling
 fix: resolve memory leak in streaming
 docs: update installation guide
 test: add integration tests for auth
-chore: bump version to 0.3.1
+chore: bump version to 0.3.3
 ```
 
 ## Code Style

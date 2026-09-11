@@ -72,7 +72,7 @@ sudo cp target/release/aperture-router /usr/local/bin/
 Download from [Releases](https://github.com/Wayazi/aperture-router/releases):
 
 ```bash
-wget https://github.com/Wayazi/aperture-router/releases/download/v0.3.1/aperture-router-x86_64-linux.tar.gz
+wget https://github.com/Wayazi/aperture-router/releases/latest/download/aperture-router-x86_64-linux.tar.gz
 tar xzf aperture-router-x86_64-linux.tar.gz
 sudo cp aperture-router /usr/local/bin/
 ```
@@ -188,14 +188,14 @@ sudo systemctl enable --now aperture-router
 
 ```bash
 aperture-router --version
-# aperture-router 0.3.1
+# aperture-router 0.3.3
 ```
 
 ### Test Health Endpoint
 
 ```bash
 curl http://127.0.0.1:8765/health
-# {"status":"ok","service":"aperture-router","version":"0.3.1"}
+# {"status":"ok","service":"aperture-router","version":"0.3.3"}
 ```
 
 ### List Available Models

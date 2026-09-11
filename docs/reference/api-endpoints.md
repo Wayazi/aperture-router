@@ -37,7 +37,7 @@ Unauthenticated liveness probe.
 {
   "status": "ok",
   "service": "aperture-router",
-  "version": "0.3.1"
+  "version": "0.3.3"
 }
 ```
 
@@ -237,7 +237,7 @@ Server statistics. Requires admin API key.
     {"name": "glm", "models_count": 7},
     {"name": "openrouter", "models_count": 3}
   ],
-  "version": "0.3.1",
+  "version": "0.3.3",
   "refresh_interval_secs": 300
 }
 ```

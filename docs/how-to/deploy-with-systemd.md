@@ -91,7 +91,7 @@ curl http://127.0.0.1:8080/health
 Expected health response:
 
 ```json
-{"status":"ok","service":"aperture-router","version":"0.3.1"}
+{"status":"ok","service":"aperture-router","version":"0.3.3"}
 ```
 
 ## Logs

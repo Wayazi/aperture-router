@@ -14,7 +14,7 @@ By the end of this tutorial you will have:
 
 - [ ] Completed [Tutorial 1: Getting Started](01-getting-started.md) (router installed and working)
 - [ ] Completed [Tutorial 2: Configuring Providers](02-configuring-providers.md) **or** have a working `config.toml`
-- [ ] aperture-router running and `/health` returns `{"status":"ok","service":"aperture-router","version":"0.3.1"}`
+- [ ] aperture-router running and `/health` returns `{"status":"ok","service":"aperture-router","version":"0.3.3"}`
 - [ ] [OpenCode](https://opencode.ai) installed (`opencode --version` works)
 
 > **What is OpenCode?** OpenCode is an open-source AI coding assistant (similar
@@ -41,7 +41,7 @@ curl http://127.0.0.1:8765/health
 Expected:
 
 ```json
-{"status":"ok","service":"aperture-router","version":"0.3.1"}
+{"status":"ok","service":"aperture-router","version":"0.3.3"}
 ```
 
 > **What this does:** OpenCode will send all its requests to the router, so the

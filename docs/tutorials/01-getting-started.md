@@ -65,7 +65,7 @@ aperture-router --version
 Expected output (your version may be newer):
 
 ```
-aperture-router 0.3.1
+aperture-router 0.3.3
 ```
 
 ✅ **Checkpoint:** `aperture-router --version` prints a version number.
@@ -102,7 +102,7 @@ aperture-router
 You should see log lines like:
 
 ```
-INFO Starting Aperture Router v0.3.1
+INFO Starting Aperture Router v0.3.3
 INFO Listening on 127.0.0.1:8765
 INFO Discovered 12 models from 3 providers
 ```
@@ -130,13 +130,13 @@ curl http://127.0.0.1:8765/health
 Expected output:
 
 ```json
-{"status":"ok","service":"aperture-router","version":"0.3.1"}
+{"status":"ok","service":"aperture-router","version":"0.3.3"}
 ```
 
 > **What this does:** Confirms the router is up and responding. The `/health`
 > endpoint is intentionally lightweight so you can use it for uptime checks.
 
-✅ **Checkpoint:** `/health` returns `{"status":"ok","service":"aperture-router","version":"0.3.1"}`.
+✅ **Checkpoint:** `/health` returns `{"status":"ok","service":"aperture-router","version":"0.3.3"}`.
 
 ---
 
