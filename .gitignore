@@ -7,6 +7,7 @@
 config.toml
 config_test.toml
 .env
+opencode.json
 
 # Archive (internal development files)
 .archive/
@@ -32,6 +33,7 @@ Thumbs.db
 .claude/
 SESSION-*.md
 .pi/
+.zcode/
 
 # Agent reports
 *SUMMARY.md
