@@ -91,6 +91,7 @@ jobs:
       - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
           cat > release-notes.md <<'EOF'
