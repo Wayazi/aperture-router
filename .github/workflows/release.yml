@@ -80,67 +80,62 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Get version
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      # Immutable releases freeze the moment a release is published, so the
+      # assets MUST be uploaded in the same call that creates the release;
+      # create-then-upload (softprops/action-gh-release) fails with 422.
       - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.version.outputs.VERSION }}
-          name: Release ${{ steps.version.outputs.VERSION }}
-          body: |
-            ## Aperture Router ${{ steps.version.outputs.VERSION }}
-
-            ### Installation
-
-            #### Linux (x86_64)
-            ```bash
-            wget https://github.com/Wayazi/aperture-router/releases/download/${{ steps.version.outputs.VERSION }}/aperture-router-x86_64-linux.tar.gz
-            tar xzf aperture-router-x86_64-linux.tar.gz
-            sudo cp aperture-router /usr/local/bin/
-            ```
-
-            #### Linux (aarch64)
-            ```bash
-            wget https://github.com/Wayazi/aperture-router/releases/download/${{ steps.version.outputs.VERSION }}/aperture-router-aarch64-linux.tar.gz
-            tar xzf aperture-router-aarch64-linux.tar.gz
-            sudo cp aperture-router /usr/local/bin/
-            ```
-
-            #### Cargo
-            ```bash
-            cargo install aperture-router
-            ```
-
-            #### AUR (Arch Linux)
-            ```bash
-            yay -S aperture-router
-            ```
-
-            ### Verification
-
-            Verify the download with SHA256:
-            ```bash
-            sha256sum -c aperture-router-*-linux.sha256
-            ```
-
-            ### What's Changed
-
-            See [CHANGELOG.md](https://github.com/Wayazi/aperture-router/blob/main/CHANGELOG.md) for details.
-
-          files: |
-            artifacts/*/*.tar.gz
-            artifacts/*/*.sha256
-          draft: false
-          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          cat > release-notes.md <<'EOF'
+          ## Aperture Router @VERSION@
+
+          ### Installation
+
+          #### Linux (x86_64)
+          ```bash
+          wget https://github.com/Wayazi/aperture-router/releases/download/@VERSION@/aperture-router-x86_64-linux.tar.gz
+          tar xzf aperture-router-x86_64-linux.tar.gz
+          sudo cp aperture-router /usr/local/bin/
+          ```
+
+          #### Linux (aarch64)
+          ```bash
+          wget https://github.com/Wayazi/aperture-router/releases/download/@VERSION@/aperture-router-aarch64-linux.tar.gz
+          tar xzf aperture-router-aarch64-linux.tar.gz
+          sudo cp aperture-router /usr/local/bin/
+          ```
+
+          #### Cargo
+          ```bash
+          cargo install aperture-router
+          ```
+
+          #### AUR (Arch Linux)
+          ```bash
+          yay -S aperture-router
+          ```
+
+          ### Verification
+
+          Verify the download with SHA256:
+          ```bash
+          sha256sum -c aperture-router-*-linux.sha256
+          ```
+
+          ### What's Changed
+
+          See [CHANGELOG.md](https://github.com/Wayazi/aperture-router/blob/main/CHANGELOG.md) for details.
+          EOF
+          sed -i "s/@VERSION@/${VERSION}/g" release-notes.md
+          gh release create "${VERSION}" \
+            --title "Release ${VERSION}" \
+            --notes-file release-notes.md \
+            artifacts/*/*.tar.gz artifacts/*/*.sha256 \
+          || gh release upload "${VERSION}" --clobber artifacts/*/*.tar.gz artifacts/*/*.sha256

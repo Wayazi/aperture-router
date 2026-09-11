@@ -38,6 +38,8 @@ dev     ← Development branch (integration)
 
 When code changes after a release but before the next version bump, cut a re-release tag `vX.Y.Z-rN` (`-r2`, `-r3`, …) on the release commit and bump the AUR `pkgrel` to match (tag `-rN` → `pkgrel = N`). The AUR `source` array must point at the matching `vX.Y.Z-rN` tarball — never at `vX.Y.Z` itself, since the original release may be tombstoned on GitHub and its tag URL removed.
 
+⚠️ **Never delete a published release.** Deleting an immutable release leaves a tombstone bound to the tag name: re-creating a release with that tag fails (`tag_name was used by an immutable release`) and even re-pushing the deleted tag is refused. The only recovery is a fresh `-rN` tag. For the same reason, the release workflow must upload assets atomically with `gh release create` (create-then-upload trips the immutable freeze with a 422).
+
 ## Workflow
 
 ### Daily Development
