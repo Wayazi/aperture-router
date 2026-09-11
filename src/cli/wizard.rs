@@ -98,7 +98,7 @@ impl ConfigWizard {
                 &config,
                 &selected_models,
                 &format!("http://127.0.0.1:{}", router_port),
-            ))
+            )?)
         } else {
             None
         };

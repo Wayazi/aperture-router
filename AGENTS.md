@@ -79,7 +79,7 @@ dev     ← Development integration (direct commits allowed)
 
 - Feature branches: `feature/your-feature` or `fix/your-fix` from `dev`
 - PR target: `dev` (not `main`)
-- Audit before pushing: `cargo test && cargo clippy -- -D warnings && cargo fmt --check`
+- Audit before pushing: `cargo test && cargo clippy --all-targets --all-features -- -D warnings && cargo fmt --check`
 - Release: merge `dev` → `main`, tag `vX.Y.Z`, push tag
 
 ## File Structure
